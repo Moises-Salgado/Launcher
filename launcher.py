@@ -57,31 +57,35 @@ PROGRAMS = [
         "subtitle": "PDF → TXT + Excel (UNIQUE.xlsx)",
         "script": HERE / "P1_ExtraerDatosPDF.py",
         "desc": (
-            "Lee una Orden de Trabajo en PDF y extrae datos clave (fechas, tiempos, descripción, notas y subtareas).\n\n"
+            "Lee una Orden de Trabajo en PDF para OTs de UNIQUE y extrae datos clave cómo revisón y seguimiento de las recomendaciones, horas de filamento, respuesto a solicitar, observaciones, fechas, tiempos, descripción, notas, subtareas, entre otros datos.\n\n"
             "Luego te permite guardar:\n"
-            "• Un archivo TXT con el resumen\n"
+            "• Un archivo TXT por cada pdf con el resumen\n"
             "• Un archivo Excel UNIQUE.xlsx (una hoja por OT)"
         ),
     },
     {
         "id": "P2",
         "title": "Visor TXT de estructuras",
-        "subtitle": "Órganos / lateralidad / campos de dosis",
+        "subtitle": "Órganos / Campos de dosis / Detalles del paciente",
         "script": HERE / "P2_visor_estructuras.py",
         "desc": (
-            "Abre un TXT con bloques por estructura (Estructura:) y agrupa por órgano.\n\n"
-            "Incluye buscador y detección de lateralidad (izq/der). "
-            "Muestra pestañas con datos relevantes para revisión."
+            "Lee archivos TXT con bloques de estructuras y dosis.\n\n"
+            "• Abre un TXT con bloques por estructura y agrupa por órgano.\n"
+            "• Contiene un buscador para selecciona un órgano específico\n"
+            "• Muestra los detalles del paciente\n"
+            "• Muestra datos relevantes de los órganos."
         ),
     },
     {
         "id": "P3",
         "title": "Editor de nombre y visor de imágenes",
-        "subtitle": "Herramientas para revisar y ordenar carpetas",
+        "subtitle": "Herramientas para editar y visualizar archivos DICOM",
         "script": HERE / "P3_editor_dmc_carpeta.py",
         "desc": (
-            "Permite editar/normalizar nombres y revisar imágenes asociadas.\n\n"
-            "Útil para ordenar carpetas y hacer revisión rápida antes de continuar con el flujo."
+            "Herramienta para editar nombre del paciente de una carpeta DICOM. Revisa imágenes DICOM en visualizador y sistema de clasificación parecido al programa de Eclipse:\n\n"
+            "• Permite editar nombres.\n"
+            "• Útil para ordenar carpetas de las imágenes DICOM.\n"
+            "• Guarda nombre editado y datos seleccionados en la Vista DICOM."
         ),
     },
     {
@@ -90,8 +94,7 @@ PROGRAMS = [
         "subtitle": "Normalización/ajustes para compatibilidad",
         "script": HERE / "P4_1_dicom_eclipse_bulletproof.py",
         "desc": (
-            "Procesa DICOM para dejarlos listos/compatibles con Eclipse según tu flujo.\n\n"
-            "Recomendación: úsalo sobre una copia si vas a modificar archivos en lote."
+            "Procesa carpetas DICOM para hacerlos compatibles con el programa de Eclipse.\n\n"
         ),
     },
 ]
@@ -232,7 +235,6 @@ def extract_pdf_text(path: Path, max_pages: int = 2, max_chars: int = 6000) -> s
     # 3) OCR fallback (escaneado)
     text = ocr_pdf_first_page(path, max_chars=max_chars).strip()
     return text[:max_chars]
-
 
 def ocr_pdf_first_page(path: Path, max_chars: int = 6000) -> str:
     """
