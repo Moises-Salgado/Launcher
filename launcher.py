@@ -69,7 +69,7 @@ PROGRAMS = [
         "subtitle": "Órganos / Campos de dosis / Detalles del paciente",
         "script": HERE / "P2_visor_estructuras.py",
         "desc": (
-            "Lee archivos TXT con bloques de estructuras y dosis.\n\n"
+            "Programa que lee archivos TXT con contiene estructuras y nombre órganos de un paciente, funciones principales:\n\n"
             "• Abre un TXT con bloques por estructura y agrupa por órgano.\n"
             "• Contiene un buscador para selecciona un órgano específico\n"
             "• Muestra los detalles del paciente\n"
@@ -83,7 +83,7 @@ PROGRAMS = [
         "script": HERE / "P3_editor_dmc_carpeta.py",
         "desc": (
             "Herramienta para editar nombre del paciente de una carpeta DICOM. Revisa imágenes DICOM en visualizador y sistema de clasificación parecido al programa de Eclipse:\n\n"
-            "• Permite editar nombres.\n"
+            "• Permite editar el nombre del paciente.\n"
             "• Útil para ordenar carpetas de las imágenes DICOM.\n"
             "• Guarda nombre editado y datos seleccionados en la Vista DICOM."
         ),
@@ -94,7 +94,9 @@ PROGRAMS = [
         "subtitle": "Normalización/ajustes para compatibilidad",
         "script": HERE / "P4_1_dicom_eclipse_bulletproof.py",
         "desc": (
-            "Procesa carpetas DICOM para hacerlos compatibles con el programa de Eclipse.\n\n"
+            "Programa para transformar archivos DICOM y hacerlos compatibles con el software de planificación Eclipse de Varian. Funciones principales:\n\n"
+            "• Procesa carpetas DICOM para hacerlos compatibles con el programa de Eclipse.\n"
+            "• Guarda los DICOM transformados en una carpeta nueva.\n"
         ),
     },
 ]

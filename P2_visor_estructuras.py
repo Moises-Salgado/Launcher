@@ -233,7 +233,7 @@ class App(tk.Tk):
         left = ttk.Frame(paned, padding=8)
         paned.add(left, weight=1)
 
-        ttk.Label(left, text="Órganos / Estructuras (solo 1 por órgano)").pack(anchor="w")
+        ttk.Label(left, text="Órganos / Estructuras").pack(anchor="w")
 
         search_frame = ttk.Frame(left)
         search_frame.pack(fill="x", pady=(6, 6))
