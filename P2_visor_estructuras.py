@@ -264,7 +264,8 @@ class App(tk.Tk):
     def open_file(self):
         path = filedialog.askopenfilename(
             title="Seleccione el TXT",
-            filetypes=[("Archivos de texto", "*.txt"), ("Todos", "*.*")]
+            filetypes=[("Archivos de texto", "*.txt")],
+            defaultextension=".txt"
         )
         if not path:
             return
