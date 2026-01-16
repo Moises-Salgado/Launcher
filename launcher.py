@@ -8,6 +8,7 @@ from tkinter.scrolledtext import ScrolledText
 import shutil
 import re
 import json
+import tkinter.font as tkfont
 
 class AutoScrollbar(ttk.Scrollbar):
     """Scrollbar que se oculta automáticamente si no es necesaria."""
@@ -19,6 +20,170 @@ class AutoScrollbar(ttk.Scrollbar):
         else:
             self.grid()         # mostrar
         super().set(lo, hi)
+
+def _rounded_rect(canvas: tk.Canvas, x1, y1, x2, y2, r, **kwargs):
+    """
+    Dibuja un rectángulo redondeado en un Canvas usando arcos + rectángulos.
+    """
+    r = max(0, min(r, (x2 - x1) // 2, (y2 - y1) // 2))
+    fill = kwargs.get("fill", "")
+    outline = kwargs.get("outline", "")
+    width = kwargs.get("width", 1)
+
+    # 4 esquinas
+    canvas.create_arc(x1, y1, x1 + 2*r, y1 + 2*r, start=90, extent=90,
+                      style="pieslice", fill=fill, outline=outline, width=width)
+    canvas.create_arc(x2 - 2*r, y1, x2, y1 + 2*r, start=0, extent=90,
+                      style="pieslice", fill=fill, outline=outline, width=width)
+    canvas.create_arc(x2 - 2*r, y2 - 2*r, x2, y2, start=270, extent=90,
+                      style="pieslice", fill=fill, outline=outline, width=width)
+    canvas.create_arc(x1, y2 - 2*r, x1 + 2*r, y2, start=180, extent=90,
+                      style="pieslice", fill=fill, outline=outline, width=width)
+
+    # centro + bandas
+    canvas.create_rectangle(x1 + r, y1, x2 - r, y2, fill=fill, outline=outline, width=width)
+    canvas.create_rectangle(x1, y1 + r, x2, y2 - r, fill=fill, outline=outline, width=width)
+
+class ClinicButton(tk.Canvas):
+    """
+    Botón redondeado con color, hover y command.
+    Útil para estilo clínico (azul/verde) sin librerías externas.
+    """
+    def __init__(
+        self,
+        parent,
+        text: str,
+        command=None,
+        bg="#1d4ed8",
+        hover_bg="#2563eb",
+        fg="#ffffff",
+        radius=14,
+        height=42,
+        font=("TkDefaultFont", 10, "bold"),
+        outline="",
+        outline_width=0,
+        padx=14,
+        cursor="hand2",
+        parent_bg=None,
+        width=None,
+        min_width=220,
+        max_width=420,
+        shadow=True,
+        shadow_offset=2,
+        shadow_color="#0b1220",
+        shadow_alpha_like=False,  # Tk no soporta alpha real; lo dejamos por si lo quieres ajustar después
+        **kwargs
+    ):
+        # Fondo del canvas: ttk.Frame no soporta cget("background") -> hacemos fallback
+        if parent_bg is not None:
+            canvas_bg = parent_bg
+        else:
+            try:
+                canvas_bg = parent.cget("background")
+            except Exception:
+                canvas_bg = "#f3f8ff"
+
+        # Ancho “justo” según texto (si no te pasan width)
+        if width is None:
+            f = tkfont.Font(font=font)
+            text_w = f.measure(text)
+            width = max(min_width, min(max_width, text_w + padx * 2))
+
+        self._shadow = shadow
+        self._shadow_offset = shadow_offset
+        self._shadow_color = shadow_color
+
+        super().__init__(
+            parent,
+            width=width,
+            height=height,
+            highlightthickness=0,
+            bd=0,
+            bg=canvas_bg,
+            cursor=cursor,
+            **kwargs
+        )
+
+        self._text = text
+        self._command = command
+        self._bg = bg
+        self._hover_bg = hover_bg
+        self._fg = fg
+        self._radius = radius
+        self._height = height
+        self._font = font
+        self._outline = outline
+        self._outline_width = outline_width
+        self._padx = padx
+
+        self._is_hover = False
+        self._enabled = True
+
+        self.bind("<Configure>", lambda e: self._redraw())
+        self.bind("<Enter>", lambda e: self._set_hover(True))
+        self.bind("<Leave>", lambda e: self._set_hover(False))
+        self.bind("<Button-1>", self._on_click)
+
+        self._redraw()
+
+    def set_enabled(self, enabled: bool):
+        self._enabled = bool(enabled)
+        self.configure(cursor="hand2" if self._enabled else "arrow")
+        self._redraw()
+
+    def _set_hover(self, v: bool):
+        if not self._enabled:
+            return
+        self._is_hover = v
+        self._redraw()
+
+    def _on_click(self, event=None):
+        if not self._enabled:
+            return
+        if callable(self._command):
+            self._command()
+
+    def _redraw(self):
+        self.delete("all")
+        w = max(1, self.winfo_width())
+        h = max(1, self._height)
+
+        fill = self._hover_bg if (self._enabled and self._is_hover) else self._bg
+        if not self._enabled:
+            fill = "#9ca3af"
+
+        # sombra (primero)
+        if self._shadow:
+            _rounded_rect(
+                self,
+                2 + self._shadow_offset,
+                2 + self._shadow_offset,
+                w - 2 + self._shadow_offset,
+                h - 2 + self._shadow_offset,
+                r=self._radius,
+                fill=self._shadow_color,
+                outline="",
+                width=0,
+            )
+
+        # botón (encima)
+        _rounded_rect(
+            self,
+            2, 2, w - 2, h - 2,
+            r=self._radius,
+            fill=fill,
+            outline="",
+            width=0
+        )
+
+        # texto centrado
+        self.create_text(
+            w // 2, h // 2,
+            anchor="center",
+            text=self._text,
+            fill=self._fg,
+            font=self._font
+        )
 
 HERE = Path(__file__).resolve().parent
 
@@ -45,7 +210,6 @@ def save_halcyon_map(m: dict[str, str]) -> None:
         MAP_FILE.write_text(json.dumps(m, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:
         pass
-
 
 # 👇 Rellena esto con los seriales reales de tus 2 equipos:
 HALCYON_SERIAL_MAP = load_halcyon_map()
@@ -97,6 +261,77 @@ PROGRAMS = [
             "Programa para transformar archivos DICOM y hacerlos compatibles con el software de planificación Eclipse de Varian. Funciones principales:\n\n"
             "• Procesa carpetas DICOM para hacerlos compatibles con el programa de Eclipse.\n"
             "• Guarda los DICOM transformados en una carpeta nueva.\n"
+        ),
+    },
+]
+
+OT_BUTTONS = [
+    {
+        "key": "UNIQUE",
+        "label": "UNIQUE",
+        "desc": (
+            "OTs del acelerador UNIQUE (iClinic).\n\n"
+            "• Guarda/ordena PDFs en la ruta: Escritorio/OTs/ICLINIC/UNIQUE\n"
+            "• Útil para OTs de UNIQUE y su seguimiento."
+        ),
+    },
+    {
+        "key": "HALCYON_1",
+        "label": "HALCYON1",
+        "desc": (
+            "OTs del acelerador HALCYON 1 (ECM).\n\n"
+            "• Guarda/ordena PDFs en: Escritorio/OTs/ECM/HALCYON_1\n"
+            "• Si detecta serial, puede aprender el mapeo automáticamente."
+        ),
+    },
+    {
+        "key": "HALCYON_2",
+        "label": "HALCYON2",
+        "desc": (
+            "OTs del acelerador HALCYON 2 (ECM).\n\n"
+            "• Guarda/ordena PDFs en: Escritorio/OTs/ECM/HALCYON_2\n"
+            "• Ideal cuando ya sabes de qué equipo es la OT."
+        ),
+    },
+    {
+        "key": "AIL6",
+        "label": "ARIA 16",
+        "desc": (
+            "OTs del equipo ARIA 16.\n\n"
+            "• (Editar esta descripción)\n"
+            "• Ej: tipo de OT, destino, notas, etc."
+        ),
+    },
+    {
+        "key": "ARIL8",
+        "label": "ARIA 8",
+        "desc": (
+            "OTs del equipo ARIA 8.\n\n"
+            "• (Editar esta descripción)\n"
+        ),
+    },
+    {
+        "key": "SOMAR",
+        "label": "SERVIDOR",
+        "desc": (
+            "Servidor...\n\n"
+            "• (Editar esta descripción)\n"
+        ),
+    },
+    {
+        "key": "UPS",
+        "label": "UPS",
+        "desc": (
+            "OTs relacionadas a UPS.\n\n"
+            "• (Edita esta descripción a tu gusto)\n"
+        ),
+    },
+    {
+        "key": "CONTROL DE CALIDAD",
+        "label": "CONTROL DE CALIDAD",
+        "desc": (
+            "Descripción de control de calidad.\n\n"
+            "• (Edita esta descripción a tu gusto)\n"
         ),
     },
 ]
@@ -261,7 +496,6 @@ def ocr_pdf_first_page(path: Path, max_chars: int = 6000) -> str:
     except Exception:
         return ""
 
-
 class Launcher(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -276,6 +510,10 @@ class Launcher(tk.Tk):
 
         # --- Fullscreen toggle ---
         self._is_fullscreen = False
+
+        self._ot_win = None
+        self._ot_title_lbl = None
+        self._ot_desc_box = None
 
         def toggle_fullscreen(event=None):
             self._is_fullscreen = not self._is_fullscreen
@@ -317,6 +555,24 @@ class Launcher(tk.Tk):
 
         self.bind("<Escape>", on_escape)
 
+    def _pick_font_family(self) -> str:
+        """
+        Elige una fuente moderna disponible (Linux/Windows) con fallback seguro.
+        """
+        fams = set(tkfont.families(self))
+
+        # Preferencias por plataforma
+        if sys.platform.startswith("win"):
+            preferred = ["Segoe UI", "Inter", "Noto Sans", "Arial", "TkDefaultFont"]
+        else:
+            preferred = ["Noto Sans", "Inter", "DejaVu Sans", "Liberation Sans", "Ubuntu", "Cantarell", "TkDefaultFont"]
+
+        for f in preferred:
+            if f in fams:
+                return f
+
+        return "TkDefaultFont"
+
     def _apply_style(self):
         # Estilo claro, limpio y “profesional” sin librerías externas
         style = ttk.Style(self)
@@ -328,74 +584,125 @@ class Launcher(tk.Tk):
         except Exception:
             pass
 
-        # Colores suaves
-        self.C_BG = "#f5f7fb"
-        self.C_CARD = "#ffffff"
-        self.C_BORDER = "#d9dee8"
-        self.C_TEXT = "#1f2a37"
-        self.C_MUTED = "#6b7280"
-        self.C_PRIMARY = "#2563eb"  # azul (solo para hover/indicaciones leves)
+        self.UI_FONT = self._pick_font_family()
+
+        # Tipografías (consistentes)
+        # self.FONT_TITLE = (self.UI_FONT, 15, "bold")
+        # self.FONT_SUB   = (self.UI_FONT, 10)
+        # self.FONT_H2    = (self.UI_FONT, 11, "bold")
+        self.FONT_BTN   = (self.UI_FONT, 10, "bold")
+        self.FONT_BTN_SM = (self.UI_FONT, 9, "bold")
+        self.FONT_BODY  = (self.UI_FONT, 10)
+        self.FONT_TREE = (self.UI_FONT, 11, "bold")   # prueba 11 o 12
+        self.FONT_TREE_HEAD = (self.UI_FONT, 10, "bold")
+
+
+        # Paleta clínica (más “software real”)
+        self.C_BG = "#eaf2ff"          # fondo general (azul muy suave)
+        self.C_CARD = "#f8fbff"        # tarjeta levemente tintada
+        self.C_CARD_INNER = "#ffffff"  # blanco puro solo para áreas de lectura
+        self.C_BORDER = "#c9d9f2"      # borde suave
+        self.C_TEXT = "#0f172a"        # texto principal
+        self.C_MUTED = "#334155"       # texto secundario
+
+        # Barra superior
+        self.C_TOPBAR = "#0b3b8f"      # azul institucional
+        self.C_TOPBAR_SUB = "#dbeafe"  # subtítulo claro
+
+        # Acciones clínicas
+        self.C_ACTION_BLUE = "#1d4ed8"
+        self.C_ACTION_BLUE_H = "#2563eb"
+        self.C_ACTION_GREEN = "#16a34a"
+        self.C_ACTION_GREEN_H = "#22c55e"
 
         self.configure(background=self.C_BG)
 
+
+        # Acciones clínicas
+        self.C_ACTION_BLUE = "#1d4ed8"
+        self.C_ACTION_BLUE_H = "#2563eb"
+        self.C_ACTION_GREEN = "#16a34a"
+        self.C_ACTION_GREEN_H = "#22c55e"
+
         # Tipografías
-        self.FONT_TITLE = ("TkDefaultFont", 15, "bold")
+        self.FONT_TITLE = ("TkDefaultFont", 30, "bold")
         self.FONT_SUB = ("TkDefaultFont", 10)
         self.FONT_H2 = ("TkDefaultFont", 11, "bold")
+        self.FONT_SUB_BIG = (self.UI_FONT, 12)   # prueba 11 o 12
 
-        # Frames
+        # Frames base
         style.configure("App.TFrame", background=self.C_BG)
+
+        # Tarjetas con tinte (no blanco puro)
         style.configure("Card.TFrame", background=self.C_CARD)
+
+        # Topbar (barra clínica)
+        style.configure("Topbar.TFrame", background=self.C_TOPBAR)
+        style.configure("TopbarTitle.TLabel", background=self.C_TOPBAR, foreground="#ffffff", font=self.FONT_TITLE)
+        style.configure("TopbarSub.TLabel", background=self.C_TOPBAR, foreground=self.C_TOPBAR_SUB, font=self.FONT_SUB)
+
+        # Labels normales (sobre tarjeta)
         style.configure("CardTitle.TLabel", background=self.C_CARD, foreground=self.C_TEXT, font=self.FONT_H2)
         style.configure("Muted.TLabel", background=self.C_CARD, foreground=self.C_MUTED)
+        # + agrega versiones para fondo App si las usas en header OT
+        style.configure("AppTitle.TLabel", background=self.C_BG, foreground=self.C_TEXT, font=self.FONT_H2)
+        style.configure("AppMuted.TLabel", background=self.C_BG, foreground=self.C_MUTED)
 
-        style.configure("HeaderTitle.TLabel", background=self.C_BG, foreground=self.C_TEXT, font=self.FONT_TITLE)
-        style.configure("HeaderSub.TLabel", background=self.C_BG, foreground=self.C_MUTED, font=self.FONT_SUB)
-
-        # Botones
-        style.configure("TButton", padding=(10, 8))
-        # Botón principal: texto más contrastado
-        style.configure("Primary.TButton", padding=(12, 10), foreground="#111827")
-        style.map(
-            "Primary.TButton",
-            foreground=[
-                ("disabled", "#9ca3af"),
-                ("pressed", "#111827"),
-                ("active", "#111827"),
-                ("!disabled", "#111827"),
-            ],
+        # Treeview (tabla) + selección clínica
+        style.configure(
+            "Treeview",
+            font=self.FONT_TREE,
+            rowheight=30,
+            bordercolor=self.C_BORDER,
+            relief="solid",
+            background=self.C_CARD_INNER,
+            fieldbackground=self.C_CARD_INNER,
+            foreground=self.C_TEXT,
         )
-        # Nota: ttk no permite setear background del botón de forma consistente cross-platform sin hacks.
-        # Igual se verá “pro” por layout; el botón primary se distingue por texto y tamaño.
+        style.configure(
+            "Treeview.Heading",
+            font=self.FONT_TREE_HEAD,
+            foreground=self.C_TEXT,
+            background=self.C_CARD,
+        )
+        style.configure(
+            "TopbarSubBig.TLabel",
+            background=self.C_TOPBAR,
+            foreground=self.C_TOPBAR_SUB,
+            font=self.FONT_SUB_BIG,
+        )
 
-        # Treeview
-        style.configure("Treeview", rowheight=26, bordercolor=self.C_BORDER, relief="solid")
-        style.configure("Treeview.Heading", font=("TkDefaultFont", 10, "bold"))
-
-        # Entry
-        style.configure("TEntry", padding=(8, 6))
+        style.map(
+            "Treeview",
+            background=[("selected", self.C_ACTION_BLUE)],
+            foreground=[("selected", "#ffffff")],
+        )
 
     def _build_ui(self):
         root = ttk.Frame(self, padding=14, style="App.TFrame")
         root.pack(fill="both", expand=True)
 
-        # Header
-        header = ttk.Frame(root, style="App.TFrame")
-        header.pack(fill="x", pady=(0, 12))
+        # Top bar clínico
+        topbar = ttk.Frame(root, style="Topbar.TFrame", padding=(14, 12))
+        topbar.pack(fill="x", pady=(0, 12))
 
-        ttk.Label(header, text="Suite de Programas", style="HeaderTitle.TLabel").pack(anchor="w")
+        ttk.Label(topbar, text="🗂️ Suite de Programas", style="TopbarTitle.TLabel").pack(anchor="w")
         ttk.Label(
-            header,
-            text="Selecciona una herramienta a la izquierda para ver su descripción. Doble click (o Enter) para abrir.",
-            style="HeaderSub.TLabel",
+            topbar,
+            text="Cómo funciona el programa:\n" \
+            "𖣐 Selecciona un programa a la izquierda para ver su descripción y apretar el botón verde \"Abrir programa\" o hacer doble click (o Enter) para abrir.\n" \
+            "   ▹ Puedes buscar programas escribiendo en el cuadro de búsqueda.\n" \
+            "𖣐 Botón OT para guardar una OT de formato PDF de la carpeta de Descarga en una carpeta esctrurada en Escritorio.",
+            style="TopbarSubBig.TLabel",
         ).pack(anchor="w", pady=(4, 0))
 
         # Main
         main = ttk.Frame(root, style="App.TFrame")
         main.pack(fill="both", expand=True)
 
-        main.columnconfigure(0, weight=1, uniform="a")
-        main.columnconfigure(1, weight=2, uniform="a")
+        # Sidebar fijo/angosto; detalle se expande
+        main.columnconfigure(0, weight=0, minsize=400)  # prueba 320–380
+        main.columnconfigure(1, weight=1)
         main.rowconfigure(0, weight=1)
 
         # Sidebar card
@@ -406,18 +713,67 @@ class Launcher(tk.Tk):
         sidebar = ttk.Frame(sidebar_outer, style="Card.TFrame")
         sidebar.pack(fill="both", expand=True)
 
-        ttk.Label(sidebar, text="Programas", style="CardTitle.TLabel").pack(anchor="w")
+        
+        # --- Acciones clínicas (botones redondeados) ---
+        ClinicButton(
+            sidebar,
+            text="🗃️ OT",
+            parent_bg=self.C_CARD,
+            bg=self.C_ACTION_BLUE,
+            hover_bg=self.C_ACTION_BLUE_H,
+            command=self.open_ot_window,
+            radius=16,
+            height=44,
+            font=self.FONT_BTN_SM,
+            width=280,
+            shadow=True,
+            shadow_offset=1,
+            shadow_color="#1e293b",
+        ).pack(pady=(15, 0), anchor="center")
 
-        ttk.Label(sidebar, text="Buscar", style="Muted.TLabel").pack(anchor="w", pady=(10, 4))
+        ClinicButton(
+            sidebar,
+            text="🗃️ Guardar OT (PDF) en Escritorio/OTs",
+            parent_bg=self.C_CARD,
+            bg=self.C_ACTION_BLUE,
+            hover_bg=self.C_ACTION_BLUE_H,
+            command=self.import_ot_pdf,
+            radius=16,
+            height=44,
+            font=self.FONT_BTN_SM,
+            width=280,
+            shadow=True,
+            shadow_offset=1,
+            shadow_color="#1e293b",
+        ).pack(pady=(10, 0), anchor="center")
+
+        ClinicButton(
+            sidebar,
+            text="▶ Abrir programa",
+            parent_bg=self.C_CARD,
+            bg=self.C_ACTION_GREEN,
+            hover_bg=self.C_ACTION_GREEN_H,
+            command=self.open_selected,
+            radius=16,
+            height=46,
+            font=self.FONT_BTN_SM,
+            width=280,
+            shadow=True,
+            shadow_offset=1,
+            shadow_color="#1e293b",
+        ).pack(pady=(10, 10), anchor="center")
+
+        ttk.Label(sidebar, text="💾 Programas", style="CardTitle.TLabel").pack(anchor="w")
+
+        ttk.Label(sidebar, text="🔎 Buscar", style="Muted.TLabel").pack(anchor="w", pady=(10, 4))
         search = ttk.Entry(sidebar, textvariable=self.search_var)
         search.pack(fill="x")
         self.search_var.trace_add("write", lambda *_: self._populate())
-
-        ttk.Label(sidebar, text="Lista", style="Muted.TLabel").pack(anchor="w", pady=(10, 4))
+        ttk.Label(sidebar, text="📋 Lista de programas    –     Doble click para abrir", style="Muted.TLabel").pack(anchor="w", pady=(10, 4))
 
         # --- Treeview con scrolls (reemplaza tu bloque actual de self.tree) ---
         tree_frame = ttk.Frame(sidebar)
-        tree_frame.pack(fill="both", expand=True)
+        tree_frame.pack(fill="x", expand=False)
 
         xscroll = AutoScrollbar(tree_frame, orient="horizontal")
         yscroll = AutoScrollbar(tree_frame, orient="vertical")
@@ -427,7 +783,7 @@ class Launcher(tk.Tk):
             columns=("id", "name"),
             show="headings",
             selectmode="browse",
-            height=14,
+            height=4, #Espacio vertical para 4 programas P1, P2, P3, P4
             xscrollcommand=xscroll.set,
             yscrollcommand=yscroll.set,
         )
@@ -438,7 +794,7 @@ class Launcher(tk.Tk):
         yscroll.grid(row=0, column=1, sticky="ns")
         xscroll.grid(row=1, column=0, sticky="ew")
 
-        tree_frame.rowconfigure(0, weight=1)
+        tree_frame.rowconfigure(0, weight=0)
         tree_frame.columnconfigure(0, weight=1)
 
         self.tree.heading("id", text="ID")
@@ -450,19 +806,6 @@ class Launcher(tk.Tk):
 
         self.tree.bind("<<TreeviewSelect>>", self.on_select)
         self.tree.bind("<Double-1>", lambda e: self.open_selected())
-
-
-        ttk.Button(sidebar, text="Abrir programa", style="Primary.TButton", command=self.open_selected).pack(
-            fill="x", pady=(12, 0)
-        )
-
-        ttk.Button(
-            sidebar,
-            text="OT (Guardar PDF en Escritorio/OTs)",
-            style="Primary.TButton",
-            command=self.import_ot_pdf
-        ).pack(fill="x", pady=(10, 0))
-
 
         # Detail card
         detail_outer = ttk.Frame(main, style="Card.TFrame", padding=14)
@@ -482,15 +825,13 @@ class Launcher(tk.Tk):
 
         self.desc = ScrolledText(detail_outer, wrap="word", height=10, bd=1, relief="solid")
         self.desc.grid(row=3, column=0, sticky="nsew")
-
-        # Estilo del área de texto (claro y legible)
         self.desc.configure(
-            background="#ffffff",
-            foreground=self.C_TEXT,
-            insertbackground=self.C_TEXT,
-            padx=10,
-            pady=10,
+            font=self.FONT_BODY,
+            spacing1=3,   # espacio antes de párrafo
+            spacing2=2,   # espacio entre líneas
+            spacing3=3,   # espacio después de párrafo
         )
+
         self.desc.configure(state="disabled")
 
         # Status bar
@@ -514,6 +855,10 @@ class Launcher(tk.Tk):
             self._index_map.append((iid, idx))
 
         self.status_var.set(f"{len(self._index_map)} programa(s) disponible(s).")
+
+        # Ajusta altura del Treeview según cantidad de items (mín 4, máx 10)
+        n = len(self._index_map)
+        self.tree.configure(height=max(4, min(10, n)))
 
     def _select_first(self):
         children = self.tree.get_children()
@@ -656,6 +1001,103 @@ class Launcher(tk.Tk):
         self.status_var.set(f"OT guardada en: {pretty}")
         messagebox.showinfo("Listo", f"Guardado en:\n{pretty}")
 
+    def open_ot_window(self):
+        # Si ya está abierta, solo enfoca
+        if self._ot_win is not None and self._ot_win.winfo_exists():
+            self._ot_win.deiconify()
+            self._ot_win.lift()
+            self._ot_win.focus_force()
+            return
+
+        win = tk.Toplevel(self)
+        win.configure(background=self.C_BG)
+        self._ot_win = win
+        win.title("OT")
+        win.geometry("900x520")
+
+        # Permite que el texto crezca
+        win.columnconfigure(0, weight=1)
+        win.rowconfigure(2, weight=1)
+
+        # Encabezado
+        header = ttk.Frame(win, padding=12, style="App.TFrame")
+        header.grid(row=0, column=0, sticky="ew")
+
+        title = ttk.Label(header, text="🗃️ OT", style="AppTitle.TLabel")
+        title.pack(anchor="w")
+        sub = ttk.Label(
+            header,
+            text="Selecciona un tipo para ver la descripción.",
+            style="Muted.TLabel")
+        sub.pack(anchor="w", pady=(4, 0))
+
+        # Botonera horizontal
+        btn_frame = ttk.Frame(win, padding=(12, 0, 12, 12), style="App.TFrame")
+        btn_frame.grid(row=1, column=0, sticky="ew")
+        for i in range(len(OT_BUTTONS)):
+            btn_frame.columnconfigure(i, weight=1)
+
+        for i, item in enumerate(OT_BUTTONS):
+            btn = ClinicButton(
+                btn_frame,
+                text=item["label"],
+                parent_bg=self.C_BG,   # o self.C_CARD si prefieres blanco
+                bg=self.C_ACTION_BLUE,
+                hover_bg=self.C_ACTION_BLUE_H,
+                command=lambda k=item["key"]: self._ot_show_desc(k),
+                radius=14,
+                height=40,
+                font=("TkDefaultFont", 9, "bold"),
+            )
+            btn.grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 8, 0))
+
+        # Panel descripción
+        body = ttk.Frame(win, padding=(12, 0, 12, 12), style="App.TFrame")
+        body.grid(row=2, column=0, sticky="nsew")
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(1, weight=1)
+
+        self._ot_title_lbl = ttk.Label(body, text="Seleccione un tipo…", style="CardTitle.TLabel")
+        self._ot_title_lbl.grid(row=0, column=0, sticky="w", pady=(0, 10))
+
+        self._ot_desc_box = ScrolledText(body, wrap="word", bd=1, relief="solid")
+        self._ot_desc_box.grid(row=1, column=0, sticky="nsew")
+        self._ot_desc_box.configure(
+            font=self.FONT_BODY,
+            spacing1=3,
+            spacing2=2,
+            spacing3=3,
+        )
+        self._ot_desc_box.configure(state="disabled")
+
+        # Selección inicial
+        self._ot_show_desc("UNIQUE")
+
+        # Si cierran la ventana, limpia referencia
+        def _on_close():
+            self._ot_win = None
+            self._ot_title_lbl = None
+            self._ot_desc_box = None
+            win.destroy()
+
+        win.protocol("WM_DELETE_WINDOW", _on_close)
+
+    def _ot_show_desc(self, key: str):
+        if not (self._ot_win and self._ot_win.winfo_exists()):
+            return
+        if self._ot_title_lbl is None or self._ot_desc_box is None:
+            return
+
+        item = next((x for x in OT_BUTTONS if x["key"] == key), None)
+        if not item:
+            return
+
+        self._ot_title_lbl.configure(text=f"{item['label']}")
+
+        self._ot_desc_box.configure(state="normal")
+        self._ot_desc_box.delete("1.0", tk.END)
+        self._ot_desc_box.insert(tk.END, item.get("desc", ""))
+        self._ot_desc_box.configure(state="disabled")
 
     def open_selected(self):
         p = self._get_selected_program()
