@@ -185,6 +185,121 @@ class ClinicButton(tk.Canvas):
             font=self._font
         )
 
+class RoundedCard(ttk.Frame):
+    """
+    Tarjeta redondeada real: se dibuja en Canvas y el contenido va en un Frame interno,
+    inseteado por padding para que NO tape las esquinas redondeadas.
+    """
+    def __init__(
+        self,
+        parent,
+        bg_card: str,
+        bg_parent: str,
+        radius: int = 16,
+        padding: int = 12,
+        shadow: bool = True,
+        shadow_offset: int = 2,
+        shadow_color: str = "#1e293b",
+        border_color: str | None = None,
+        border_width: int = 1,
+        **kwargs
+    ):
+        super().__init__(parent, style="App.TFrame", **kwargs)
+
+        self.bg_card = bg_card
+        self.bg_parent = bg_parent
+        self.radius = radius
+        self.padding = padding
+        self.shadow = shadow
+        self.shadow_offset = shadow_offset
+        self.shadow_color = shadow_color
+        self.border_color = border_color or ""   # "" = sin borde
+        self.border_width = border_width
+
+        self.canvas = tk.Canvas(self, highlightthickness=0, bd=0, bg=self.bg_parent)
+        self.canvas.pack(fill="both", expand=True)
+
+        # Contenido real va aquí
+        self.inner = ttk.Frame(self.canvas, style="Card.TFrame")
+
+        # Metemos el inner dentro del canvas con margen real
+        self._win = self.canvas.create_window(
+            self.padding, self.padding,
+            anchor="nw",
+            window=self.inner
+        )
+
+        self.canvas.bind("<Configure>", self._redraw)
+
+    def _redraw(self, event=None):
+        w = self.canvas.winfo_width()
+        h = self.canvas.winfo_height()
+        if w <= 2 or h <= 2:
+            return
+
+        self.canvas.delete("card")
+
+        # Sombra (debajo)
+        if self.shadow:
+            _rounded_rect(
+                self.canvas,
+                2 + self.shadow_offset,
+                2 + self.shadow_offset,
+                w - 2 + self.shadow_offset,
+                h - 2 + self.shadow_offset,
+                r=self.radius,
+                fill=self.shadow_color,
+                outline="",
+                width=0,
+                tags="card",
+            )
+
+        # Tarjeta (encima)
+        # --- Borde SIN outline (2 capas) para evitar artefactos en esquinas ---
+        bx = max(0, int(self.border_width))
+        has_border = bool(self.border_color) and bx > 0
+
+        if has_border:
+            # capa borde (fondo)
+            _rounded_rect(
+                self.canvas,
+                2, 2, w - 2, h - 2,
+                r=self.radius,
+                fill=self.border_color,
+                outline="",
+                width=0,
+                tags="card",
+            )
+
+            # capa interior (relleno)
+            _rounded_rect(
+                self.canvas,
+                2 + bx, 2 + bx, w - 2 - bx, h - 2 - bx,
+                r=max(0, self.radius - bx),
+                fill=self.bg_card,
+                outline="",
+                width=0,
+                tags="card",
+            )
+        else:
+            # sin borde
+            _rounded_rect(
+                self.canvas,
+                2, 2, w - 2, h - 2,
+                r=self.radius,
+                fill=self.bg_card,
+                outline="",
+                width=0,
+                tags="card",
+            )
+
+        # Ajuste del inner para que NO tape bordes/esquinas
+        inner_w = max(1, w - (self.padding * 2))
+        inner_h = max(1, h - (self.padding * 2))
+
+        self.canvas.coords(self._win, self.padding, self.padding)
+        self.canvas.itemconfigure(self._win, width=inner_w, height=inner_h)
+
 HERE = Path(__file__).resolve().parent
 
 MAP_FILE = HERE / "halcyon_serial_map.json"
@@ -599,14 +714,14 @@ class Launcher(tk.Tk):
 
         # Paleta clínica (más “software real”)
         self.C_BG = "#eaf2ff"          # fondo general (azul muy suave)
-        self.C_CARD = "#f8fbff"        # tarjeta levemente tintada
-        self.C_CARD_INNER = "#ffffff"  # blanco puro solo para áreas de lectura
+        self.C_CARD = "#82b7fc"        # tarjeta levemente tintada
+        self.C_CARD_INNER = "#82b7fc"  # blanco puro solo para áreas de lectura
         self.C_BORDER = "#c9d9f2"      # borde suave
         self.C_TEXT = "#0f172a"        # texto principal
         self.C_MUTED = "#334155"       # texto secundario
 
         # Barra superior
-        self.C_TOPBAR = "#0b3b8f"      # azul institucional
+        self.C_TOPBAR = "#013999"      # azul institucional
         self.C_TOPBAR_SUB = "#dbeafe"  # subtítulo claro
 
         # Acciones clínicas
@@ -617,9 +732,8 @@ class Launcher(tk.Tk):
 
         self.configure(background=self.C_BG)
 
-
         # Acciones clínicas
-        self.C_ACTION_BLUE = "#1d4ed8"
+        self.C_ACTION_BLUE = "#436ee4"
         self.C_ACTION_BLUE_H = "#2563eb"
         self.C_ACTION_GREEN = "#16a34a"
         self.C_ACTION_GREEN_H = "#22c55e"
@@ -643,7 +757,7 @@ class Launcher(tk.Tk):
 
         # Labels normales (sobre tarjeta)
         style.configure("CardTitle.TLabel", background=self.C_CARD, foreground=self.C_TEXT, font=self.FONT_H2)
-        style.configure("Muted.TLabel", background=self.C_CARD, foreground=self.C_MUTED)
+        style.configure("Muted.TLabel", background=self.C_CARD, foreground=self.C_MUTED, font=(self.UI_FONT, 10, "bold"))  # Adjusted to bold
         # + agrega versiones para fondo App si las usas en header OT
         style.configure("AppTitle.TLabel", background=self.C_BG, foreground=self.C_TEXT, font=self.FONT_H2)
         style.configure("AppMuted.TLabel", background=self.C_BG, foreground=self.C_MUTED)
@@ -705,14 +819,25 @@ class Launcher(tk.Tk):
         main.columnconfigure(1, weight=1)
         main.rowconfigure(0, weight=1)
 
-        # Sidebar card
-        sidebar_outer = ttk.Frame(main, style="Card.TFrame", padding=12)
+        # Sidebar card (REDONDEADA real con Canvas)
+        sidebar_outer = RoundedCard(
+            main,
+            bg_card=self.C_CARD,
+            bg_parent=self.C_BG,
+            radius=20,
+            padding=12,
+            shadow=True,
+            shadow_offset=2,
+            shadow_color="#1e293b",
+            border_color=self.C_BORDER,
+            border_width=2,
+        )
         sidebar_outer.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
 
-        # “Borde” sutil simulando tarjeta (frame interno)
-        sidebar = ttk.Frame(sidebar_outer, style="Card.TFrame")
-        sidebar.pack(fill="both", expand=True)
+        # Frame interno real (aquí van tus widgets)
+        sidebar = sidebar_outer.inner
 
+        sidebar.configure(style="Card.TFrame")
         
         # --- Acciones clínicas (botones redondeados) ---
         ClinicButton(
@@ -772,7 +897,7 @@ class Launcher(tk.Tk):
         ttk.Label(sidebar, text="📋 Lista de programas    –     Doble click para abrir", style="Muted.TLabel").pack(anchor="w", pady=(10, 4))
 
         # --- Treeview con scrolls (reemplaza tu bloque actual de self.tree) ---
-        tree_frame = ttk.Frame(sidebar)
+        tree_frame = ttk.Frame(sidebar, style="Card.TFrame")
         tree_frame.pack(fill="x", expand=False)
 
         xscroll = AutoScrollbar(tree_frame, orient="horizontal")
@@ -1032,8 +1157,18 @@ class Launcher(tk.Tk):
         sub.pack(anchor="w", pady=(4, 0))
 
         # Botonera horizontal
-        btn_frame = ttk.Frame(win, padding=(12, 0, 12, 12), style="App.TFrame")
-        btn_frame.grid(row=1, column=0, sticky="ew")
+        btn_card = RoundedCard(
+            win,
+            bg_card=self.C_CARD,
+            bg_parent=self.C_BG,
+            radius=18,
+            padding=10,
+            shadow=False,  # en OT suele verse mejor sin sombra aquí
+        )
+        btn_card.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
+
+        btn_frame = btn_card.inner
+
         for i in range(len(OT_BUTTONS)):
             btn_frame.columnconfigure(i, weight=1)
 

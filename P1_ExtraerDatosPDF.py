@@ -5,6 +5,13 @@ import re  # libreria para trabajar con expresiones regulares
 from datetime import datetime  # libreria para trabajar con fechas y horas
 import camelot
 import pandas as pd
+from pathlib import Path
+
+def _primer_dir_existente(*candidatos: Path) -> str:
+    for c in candidatos:
+        if c.exists() and c.is_dir():
+            return str(c)
+    return str(Path.home())
 
 # Clase principal para extraer datos de un PDF
 class ExtractorPDF:    
@@ -450,7 +457,6 @@ class ExtractorPDF:
 
         return subtareas
 
-
     # =============== NUEVO: extraer DESCRIPCIÓN DE LA FALLA O SINTOMA desde texto plano ===============
     def extraer_descripcion_falla_desde_texto(self, texto):
         """
@@ -863,12 +869,17 @@ class ExtractorPDF:
         # ========= GUARDAR TXT =========
         sugerido = nombre_base + ".txt"
 
+        home = Path.home()
+        escritorio_dir = _primer_dir_existente(home / "Escritorio", home / "Desktop")
+
         ruta_txt = filedialog.asksaveasfilename(
             title="Guardar datos (TXT)",
             defaultextension=".txt",
             filetypes=[("Archivos de texto", "*.txt")],
-            initialfile=sugerido
+            initialfile=sugerido,
+            initialdir=escritorio_dir
         )
+
 
         if not ruta_txt:
             print("\nNo se guardó el archivo de texto.")
@@ -959,34 +970,47 @@ class ExtractorPDF:
             )
 
 def main():
-    # Crear una instancia del extractor
-    extractor = ExtractorPDF()
-    
-    # Seleccionar archivo PDF
-    print("Selecciona el archivo PDF para extraer datos...")
-    ruta_pdf = filedialog.askopenfilename(
-        title="Seleccione el PDF", 
-        filetypes=[("PDF", "*.pdf")]
-    )
-    
-    if not ruta_pdf:
-        print("No se seleccionó ningún archivo.")
-        return
-    
-    # Extraer texto del PDF
-    print("Extrayendo texto del PDF...")
-    texto = extractor.extraer_texto_pdf(ruta_pdf)
-    
-    if not texto:
-        print("No se pudo extraer texto del PDF.")
-        return
-    
-    # Extraer todos los datos (incluyendo subtareas desde la tabla)
-    print("Analizando el contenido...")
-    datos_extraidos = extractor.extraer_todos_los_datos(texto, ruta_pdf=ruta_pdf)
-    
-    # Mostrar resultados y guardarlos en TXT
-    extractor.mostrar_resultados(datos_extraidos)
+    # Crear root de Tk (oculto) para que file dialogs/messagebox funcionen bien
+    root = tk.Tk()
+    root.withdraw()
+    root.update()
+
+    try:
+        extractor = ExtractorPDF()
+
+        home = Path.home()
+        descargas_dir = _primer_dir_existente(home / "Descargas", home / "Downloads")
+
+        print("Selecciona el archivo PDF para extraer datos...")
+        ruta_pdf = filedialog.askopenfilename(
+            title="Seleccione el PDF",
+            filetypes=[("PDF", "*.pdf")],
+            initialdir=descargas_dir
+        )
+
+        if not ruta_pdf:
+            print("No se seleccionó ningún archivo.")
+            return
+
+        print("Extrayendo texto del PDF...")
+        texto = extractor.extraer_texto_pdf(ruta_pdf)
+        if not texto:
+            messagebox.showerror("Error", "No se pudo extraer texto del PDF.")
+            return
+
+        print("Analizando el contenido...")
+        datos_extraidos = extractor.extraer_todos_los_datos(texto, ruta_pdf=ruta_pdf)
+
+        extractor.mostrar_resultados(datos_extraidos)
+
+    except Exception as e:
+        # Si algo revienta (por ejemplo, fechas "No encontrado"), lo verás en un mensaje
+        msg = f"Ocurrió un error:\n\n{e}\n\nDetalle:\n{traceback.format_exc()}"
+        print(msg)
+        messagebox.showerror("Error", msg)
+
+    finally:
+        root.destroy()
 
 if __name__ == "__main__":
     main()
