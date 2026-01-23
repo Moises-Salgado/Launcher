@@ -6,6 +6,10 @@ from datetime import datetime  # libreria para trabajar con fechas y horas
 import camelot
 import pandas as pd
 from pathlib import Path
+import sys
+import traceback
+import shutil
+
 
 def _primer_dir_existente(*candidatos: Path) -> str:
     for c in candidatos:
@@ -766,24 +770,23 @@ class ExtractorPDF:
     
     def agregar_patron(self, nombre_campo, patron_regex):
         self.patrones[nombre_campo] = patron_regex
-    
 
-    def mostrar_resultados(self, datos):
+    def mostrar_resultados(self, datos, ruta_pdf: str | None = None, out_dir: Path | None = None):
         from pathlib import Path
         import pandas as pd
 
         print("\n" + "="*50)
         print("           DATOS EXTRAÍDOS DEL PDF")
         print("="*50)
-        
+
         # Crear el texto para mostrar y guardar
         texto_salida = "="*50 + "\n"
         texto_salida += "           DATOS EXTRAÍDOS DEL PDF\n"
         texto_salida += "="*50 + "\n"
-        
+
         # Aquí iremos guardando las filas para Excel, en el MISMO orden que el TXT
         filas_excel = []
-        
+
         # Mostrar título primero
         if "TÍTULO" in datos:
             titulo_line = f"\nTÍTULO: {datos['TÍTULO']}"
@@ -791,13 +794,13 @@ class ExtractorPDF:
             texto_salida += titulo_line + "\n"
             print("-"*50)
             texto_salida += "-"*50 + "\n"
-            
+
             filas_excel.append({
                 "Categoría": "TÍTULO",
                 "Campo": "TÍTULO",
                 "Valor": str(datos["TÍTULO"])
             })
-        
+
         # Agrupar por categorías para mejor lectura
         categorias = {
             "INFORMACIÓN GENERAL": ["N°", "FECHA", "FECHA PROGRAMADA"],
@@ -822,20 +825,20 @@ class ExtractorPDF:
             ],
             "OTROS": ["DURACION REGISTRADA"]
         }
-        
+
         # Mostrar categorías y llenar filas_excel
         for categoria, campos in categorias.items():
             categoria_line = f"\n{categoria}"
             print(categoria_line)
             texto_salida += categoria_line + "\n"
-            
+
             for campo in campos:
                 if campo in datos and datos[campo] != "No encontrado":
                     valor = datos[campo]
                     campo_line = f"  • {campo}: {valor}"
                     print(campo_line)
                     texto_salida += campo_line + "\n"
-                    
+
                     filas_excel.append({
                         "Categoría": categoria,
                         "Campo": campo,
@@ -858,7 +861,6 @@ class ExtractorPDF:
         mes = "00"
         # formato esperado: YYYY-MM-DD HH:MM
         if len(fecha_inicio_str) >= 7:
-            # posiciones 5 y 6 → MM
             mes = fecha_inicio_str[5:7]
 
         if numero_ot:
@@ -866,24 +868,57 @@ class ExtractorPDF:
         else:
             nombre_base = f"OT_{codigo_tipo}{mes}"
 
+        # ========= Preparar carpeta Resumen (si out_dir fue entregado) =========
+        resumen_dir = None
+        if out_dir is not None:
+            out_dir = Path(out_dir)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            resumen_dir = out_dir / "Resumen"
+            resumen_dir.mkdir(parents=True, exist_ok=True)
+
+        # ========= GUARDAR PDF "FORMATO P1" (solo si out_dir fue entregado) =========
+        pdf_guardado = None
+        if ruta_pdf and out_dir is not None:
+            nombre_pdf = nombre_base + ".pdf"
+            dst_pdf = out_dir / nombre_pdf
+
+            # ✅ Si existe, preguntar sobrescritura
+            if dst_pdf.exists():
+                ok = messagebox.askyesno(
+                    "Archivo existe",
+                    f"Ya existe el PDF:\n{dst_pdf.name}\n\n¿Quieres sobrescribirlo?"
+                )
+                if not ok:
+                    messagebox.showinfo("Cancelado", "No se guardó el PDF (no se sobrescribió).")
+                    return  # cancelamos todo para no dejar TXT/Excel sin PDF
+
+            try:
+                shutil.copy2(ruta_pdf, dst_pdf)
+                pdf_guardado = str(dst_pdf)
+            except Exception as e:
+                print(f"Error al guardar PDF en destino: {e}")
+
         # ========= GUARDAR TXT =========
         sugerido = nombre_base + ".txt"
 
-        home = Path.home()
-        escritorio_dir = _primer_dir_existente(home / "Escritorio", home / "Desktop")
+        if out_dir is not None:
+            # ✅ TXT dentro de Resumen
+            ruta_txt = str(resumen_dir / sugerido)
+        else:
+            home = Path.home()
+            escritorio_dir = _primer_dir_existente(home / "Escritorio", home / "Desktop")
 
-        ruta_txt = filedialog.asksaveasfilename(
-            title="Guardar datos (TXT)",
-            defaultextension=".txt",
-            filetypes=[("Archivos de texto", "*.txt")],
-            initialfile=sugerido,
-            initialdir=escritorio_dir
-        )
+            ruta_txt = filedialog.asksaveasfilename(
+                title="Guardar datos (TXT)",
+                defaultextension=".txt",
+                filetypes=[("Archivos de texto", "*.txt")],
+                initialfile=sugerido,
+                initialdir=escritorio_dir
+            )
 
-
-        if not ruta_txt:
-            print("\nNo se guardó el archivo de texto.")
-            return
+            if not ruta_txt:
+                print("\nNo se guardó el archivo de texto.")
+                return
 
         txt_ok = False
         excel_ok = False
@@ -899,8 +934,12 @@ class ExtractorPDF:
 
         # ========= GUARDAR / ACTUALIZAR EXCEL UNIQUE.xlsx =========
         if filas_excel and txt_ok:
-            ruta_txt_path = Path(ruta_txt)
-            ruta_excel = ruta_txt_path.with_name("UNIQUE.xlsx")
+            if out_dir is not None:
+                # ✅ Excel dentro de Resumen
+                ruta_excel = resumen_dir / "UNIQUE.xlsx"
+            else:
+                ruta_txt_path = Path(ruta_txt)
+                ruta_excel = ruta_txt_path.with_name("UNIQUE.xlsx")
 
             # Nombre de la hoja = nombre_base (pero cumpliendo restricciones de Excel)
             sheet_name = nombre_base
@@ -913,7 +952,6 @@ class ExtractorPDF:
 
             try:
                 if ruta_excel.exists():
-                    # Modo append, reemplazando hoja si ya existe
                     with pd.ExcelWriter(
                         ruta_excel,
                         engine="openpyxl",
@@ -922,7 +960,6 @@ class ExtractorPDF:
                     ) as writer:
                         df.to_excel(writer, sheet_name=sheet_name, index=False)
                 else:
-                    # Crear archivo nuevo
                     with pd.ExcelWriter(ruta_excel, engine="openpyxl") as writer:
                         df.to_excel(writer, sheet_name=sheet_name, index=False)
 
@@ -939,12 +976,12 @@ class ExtractorPDF:
                 "Tus datos fueron guardados correctamente.\n\n"
                 f"📄 Archivo TXT:\n{ruta_txt}\n\n"
                 f"📊 Archivo Excel (UNIQUE.xlsx):\n{ruta_excel}\n\n"
-                "Puedes cerrar esta ventana con el botón Ok."
             )
-            messagebox.showinfo(
-                "✅ Datos guardados",
-                mensaje
-            )
+            if pdf_guardado:
+                mensaje += f"📄 PDF guardado:\n{pdf_guardado}\n\n"
+            mensaje += "Puedes cerrar esta ventana con el botón Ok."
+
+            messagebox.showinfo("✅ Datos guardados", mensaje)
 
         elif txt_ok and not excel_ok:
             mensaje = (
@@ -953,10 +990,7 @@ class ExtractorPDF:
                 f"📄 Archivo TXT:\n{ruta_txt}\n\n"
                 "Revisa permisos de carpeta o si el archivo Excel está abierto."
             )
-            messagebox.showwarning(
-                "⚠️ Atención",
-                mensaje
-            )
+            messagebox.showwarning("⚠️ Atención", mensaje)
 
         else:
             mensaje = (
@@ -964,12 +998,18 @@ class ExtractorPDF:
                 "Ningún archivo se ha guardado correctamente.\n\n"
                 "Cierra esta ventana e intenta ejecutar nuevamente el programa."
             )
-            messagebox.showerror(
-                "❌ Error al guardar",
-                mensaje
-            )
+            messagebox.showerror("❌ Error al guardar", mensaje)
 
 def main():
+
+    pdf_arg = None
+    out_dir_arg = None
+
+    if len(sys.argv) >= 2:
+        pdf_arg = Path(sys.argv[1])
+    if len(sys.argv) >= 3:
+        out_dir_arg = Path(sys.argv[2])
+
     # Crear root de Tk (oculto) para que file dialogs/messagebox funcionen bien
     root = tk.Tk()
     root.withdraw()
@@ -978,19 +1018,33 @@ def main():
     try:
         extractor = ExtractorPDF()
 
-        home = Path.home()
-        descargas_dir = _primer_dir_existente(home / "Descargas", home / "Downloads")
+        # --- leer argv ---
+        pdf_arg = None
+        out_dir_arg = None
 
-        print("Selecciona el archivo PDF para extraer datos...")
-        ruta_pdf = filedialog.askopenfilename(
-            title="Seleccione el PDF",
-            filetypes=[("PDF", "*.pdf")],
-            initialdir=descargas_dir
-        )
+        if len(sys.argv) >= 2:
+            pdf_arg = Path(sys.argv[1])
+        if len(sys.argv) >= 3:
+            out_dir_arg = Path(sys.argv[2])
 
-        if not ruta_pdf:
-            print("No se seleccionó ningún archivo.")
-            return
+        # --- elegir pdf ---
+        if pdf_arg is not None and pdf_arg.exists():
+            ruta_pdf = str(pdf_arg)
+        else:
+            home = Path.home()
+            descargas_dir = _primer_dir_existente(home / "Descargas", home / "Downloads")
+
+            print("Selecciona el archivo PDF para extraer datos...")
+            ruta_pdf = filedialog.askopenfilename(
+                title="Seleccione el PDF",
+                filetypes=[("PDF", "*.pdf")],
+                initialdir=descargas_dir
+            )
+
+            if not ruta_pdf:
+                print("No se seleccionó ningún archivo.")
+                return
+
 
         print("Extrayendo texto del PDF...")
         texto = extractor.extraer_texto_pdf(ruta_pdf)
@@ -1001,7 +1055,7 @@ def main():
         print("Analizando el contenido...")
         datos_extraidos = extractor.extraer_todos_los_datos(texto, ruta_pdf=ruta_pdf)
 
-        extractor.mostrar_resultados(datos_extraidos)
+        extractor.mostrar_resultados(datos_extraidos, ruta_pdf=ruta_pdf, out_dir=out_dir_arg)
 
     except Exception as e:
         # Si algo revienta (por ejemplo, fechas "No encontrado"), lo verás en un mensaje

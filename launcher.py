@@ -461,12 +461,15 @@ def _find_halcyon_serial(blob: str) -> str | None:
         return None
     return f"HAL{m.group(1)}".upper()
 
-def run_script(path: Path):
+def run_script(path: Path, args: list[str] | None = None):
     if not path.exists():
         messagebox.showerror("No encontrado", f"No existe:\n{path}")
         return
     try:
-        subprocess.Popen([sys.executable, str(path)], cwd=str(HERE))
+        cmd = [sys.executable, str(path)]
+        if args:
+            cmd += args
+        subprocess.Popen(cmd, cwd=str(HERE))
     except Exception as e:
         messagebox.showerror("Error", f"No se pudo abrir:\n{path}\n\n{e}")
 
@@ -629,6 +632,8 @@ class Launcher(tk.Tk):
         self._ot_win = None
         self._ot_title_lbl = None
         self._ot_desc_box = None
+        self._pending_ot_src: Path | None = None
+        self._ot_file_lbl = None
 
         def toggle_fullscreen(event=None):
             self._is_fullscreen = not self._is_fullscreen
@@ -733,7 +738,7 @@ class Launcher(tk.Tk):
         self.configure(background=self.C_BG)
 
         # Acciones clínicas
-        self.C_ACTION_BLUE = "#436ee4"
+        self.C_ACTION_BLUE = "#3449ff"
         self.C_ACTION_BLUE_H = "#2563eb"
         self.C_ACTION_GREEN = "#16a34a"
         self.C_ACTION_GREEN_H = "#22c55e"
@@ -743,6 +748,9 @@ class Launcher(tk.Tk):
         self.FONT_SUB = ("TkDefaultFont", 10)
         self.FONT_H2 = ("TkDefaultFont", 11, "bold")
         self.FONT_SUB_BIG = (self.UI_FONT, 12)   # prueba 11 o 12
+
+        style.configure("CardWhite.TFrame", background="#ffffff")
+        style.configure("CardWhiteTitle.TLabel", background="#ffffff", foreground=self.C_TEXT, font=self.FONT_H2)
 
         # Frames base
         style.configure("App.TFrame", background=self.C_BG)
@@ -790,6 +798,18 @@ class Launcher(tk.Tk):
             "Treeview",
             background=[("selected", self.C_ACTION_BLUE)],
             foreground=[("selected", "#ffffff")],
+        )
+
+        # --- Combobox OT (más "clínico") ---
+        style.configure(
+            "OT.TCombobox",
+            padding=6,
+        )
+        style.map(
+            "OT.TCombobox",
+            fieldbackground=[("readonly", "#ffffff")],
+            background=[("readonly", "#ffffff")],
+            foreground=[("readonly", self.C_TEXT)],
         )
 
     def _build_ui(self):
@@ -842,35 +862,19 @@ class Launcher(tk.Tk):
         # --- Acciones clínicas (botones redondeados) ---
         ClinicButton(
             sidebar,
-            text="🗃️ OT",
+            text="🗃️ Importar OT (PDF) y guardar en Escritorio/OTs",
             parent_bg=self.C_CARD,
             bg=self.C_ACTION_BLUE,
             hover_bg=self.C_ACTION_BLUE_H,
-            command=self.open_ot_window,
+            command=self.import_ot_pdf,   # <-- ahora import_ot_pdf hará el “flujo completo”
             radius=16,
             height=44,
             font=self.FONT_BTN_SM,
-            width=280,
+            width=350,
             shadow=True,
             shadow_offset=1,
             shadow_color="#1e293b",
-        ).pack(pady=(15, 0), anchor="center")
-
-        ClinicButton(
-            sidebar,
-            text="🗃️ Guardar OT (PDF) en Escritorio/OTs",
-            parent_bg=self.C_CARD,
-            bg=self.C_ACTION_BLUE,
-            hover_bg=self.C_ACTION_BLUE_H,
-            command=self.import_ot_pdf,
-            radius=16,
-            height=44,
-            font=self.FONT_BTN_SM,
-            width=280,
-            shadow=True,
-            shadow_offset=1,
-            shadow_color="#1e293b",
-        ).pack(pady=(10, 0), anchor="center")
+        ).pack(pady=(15, 10), anchor="center")
 
         ClinicButton(
             sidebar,
@@ -963,7 +967,7 @@ class Launcher(tk.Tk):
         status = ttk.Frame(root, style="App.TFrame")
         status.pack(fill="x", pady=(12, 0))
         ttk.Separator(status).pack(fill="x", pady=(0, 8))
-        ttk.Label(status, textvariable=self.status_var, style="HeaderSub.TLabel").pack(anchor="w")
+        ttk.Label(status, textvariable=self.status_var, style="AppMuted.TLabel").pack(anchor="w")
 
     def _populate(self):
         q = (self.search_var.get() or "").strip().lower()
@@ -1035,96 +1039,11 @@ class Launcher(tk.Tk):
             messagebox.showerror("No encontrado", f"No existe:\n{src}")
             return
 
-        # 2) Identificar tipo
-        kind = classify_ot_pdf(src)
+        # 2) Guardar como OT “pendiente”
+        self._pending_ot_src = src
 
-        if kind is None:
-            # No se pudo determinar nada -> preguntar UNIQUE vs Halcyon
-            ans = messagebox.askquestion(
-                "Tipo de OT",
-                "No pude determinar el tipo automáticamente.\n\n"
-                "¿Es UNIQUE?\n\n"
-                "Sí = UNIQUE\nNo = HALCYON"
-            )
-            kind = "UNIQUE" if ans == "yes" else "HALCYON"
-
-        if kind == "HALCYON":
-            # Intentar aprender por serial (sin depender del nombre)
-            name = (src.name or "").lower()
-            text = extract_pdf_text(src).lower()
-            blob = f"{name}\n{text}"
-            blob = blob.replace("á","a").replace("é","e").replace("í","i").replace("ó","o").replace("ú","u")
-            blob = re.sub(r"\s+", " ", blob)
-
-            serial = _find_halcyon_serial(blob)
-
-            if serial:
-                # 1) si ya está mapeado: listo
-                if serial in HALCYON_SERIAL_MAP:
-                    kind = HALCYON_SERIAL_MAP[serial]
-
-                else:
-                    # 2) si NO está mapeado: preguntar 1 vez y guardar
-                    q = messagebox.askquestion(
-                        "Detecté el equipo Halcyon",
-                        f"Encontré el número de serie: {serial}\n\n"
-                        "¿Este equipo es HALCYON 1?\n\n"
-                        "Sí = HALCYON 1\nNo = HALCYON 2"
-                    )
-                    kind = "HALCYON_1" if q == "yes" else "HALCYON_2"
-                    HALCYON_SERIAL_MAP[serial] = kind
-                    save_halcyon_map(HALCYON_SERIAL_MAP)
-
-            else:
-                # No pude extraer serial -> recién aquí pregunto
-                q = messagebox.askquestion(
-                    "Halcyon",
-                    "No pude detectar el número de serie en el PDF.\n\n"
-                    "¿Es Halcyon 1?\n\nSí = Halcyon 1\nNo = Halcyon 2"
-                )
-                kind = "HALCYON_1" if q == "yes" else "HALCYON_2"
-
-        # 3) Crear carpeta destino: Escritorio/OTs/<TIPO>
-        desktop = _desktop_dir()
-        base = desktop / "OTs"
-
-        # Regla de carpetas por tipo
-        if kind == "UNIQUE":
-            dst_dir = base / "ICLINIC" / "UNIQUE"
-        elif kind in ("HALCYON_1", "HALCYON_2"):
-            dst_dir = base / "ECM" / kind
-        else:
-            # fallback por si aparece algo nuevo
-            dst_dir = base / "OTs_OTROS" / kind
-
-        dst_dir.mkdir(parents=True, exist_ok=True)
-
-
-        dst = dst_dir / src.name
-
-        if dst.exists():
-            ok = messagebox.askyesno(
-                "Archivo existe",
-                f"Ya existe:\n{dst.name}\n\n¿Quieres reemplazarlo?"
-            )
-            if not ok:
-                self.status_var.set("No se reemplazó (cancelado).")
-                return
-
-        try:
-            shutil.copy2(src, dst)
-        except Exception as e:
-            messagebox.showerror("Error", f"No se pudo copiar:\n{src}\n→ {dst}\n\n{e}")
-            return
-
-        try:
-            rel = dst.relative_to(_desktop_dir())
-            pretty = str(rel).replace("\\", "/")
-        except Exception:
-            pretty = str(dst)
-
-        self.status_var.set(f"OT guardada en: {pretty}")
-        messagebox.showinfo("Listo", f"Guardado en:\n{pretty}")
+        # 3) Abrir ventana OT (ahora sirve para elegir tipo y guardar)
+        self.open_ot_window()
 
     def open_ot_window(self):
         # Si ya está abierta, solo enfoca
@@ -1148,43 +1067,106 @@ class Launcher(tk.Tk):
         header = ttk.Frame(win, padding=12, style="App.TFrame")
         header.grid(row=0, column=0, sticky="ew")
 
-        title = ttk.Label(header, text="🗃️ OT", style="AppTitle.TLabel")
-        title.pack(anchor="w")
-        sub = ttk.Label(
-            header,
-            text="Selecciona un tipo para ver la descripción.",
-            style="Muted.TLabel")
-        sub.pack(anchor="w", pady=(4, 0))
+        ttk.Label(header, text="🗃️ OT", style="AppTitle.TLabel").pack(anchor="w")
 
-        # Botonera horizontal
-        btn_card = RoundedCard(
+        ttk.Label(
+            header,
+            text="Selecciona el equipo/tipo y presiona “Guardar OT”.",
+            style="AppMuted.TLabel"
+        ).pack(anchor="w", pady=(4, 0))
+
+        help_txt = (
+            "Flujo:\n"
+            "• Primero eliges el PDF desde Descargas.\n"
+            "• Aquí seleccionas el equipo/tipo.\n"
+            "• UNIQUE además genera Resumen (TXT + UNIQUE.xlsx) en la subcarpeta “Resumen”."
+        )
+        ttk.Label(
+            header,
+            text=help_txt,
+            style="AppMuted.TLabel",
+            wraplength=860,
+            justify="left"
+        ).pack(anchor="w", pady=(8, 0))
+
+        pdf_name = (self._pending_ot_src.name if self._pending_ot_src else "Ninguno")
+        self._ot_file_lbl = ttk.Label(
+            header,
+            text=f"PDF seleccionado: {pdf_name}",
+            style="AppMuted.TLabel"
+        )
+        self._ot_file_lbl.pack(anchor="w", pady=(6, 0))
+
+        # ----- Selector (Combo) + Botón Guardar -----
+        select_card = RoundedCard(
             win,
-            bg_card=self.C_CARD,
+            bg_card="#ffffff",
+            # bg_card=self.C_CARD,
             bg_parent=self.C_BG,
             radius=18,
-            padding=10,
-            shadow=False,  # en OT suele verse mejor sin sombra aquí
+            padding=12,
+            shadow=False,
         )
-        btn_card.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
+        select_card.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
 
-        btn_frame = btn_card.inner
+        selector = select_card.inner
 
-        for i in range(len(OT_BUTTONS)):
-            btn_frame.columnconfigure(i, weight=1)
+        selector.configure(style="CardWhite.TFrame")
+        ttk.Label(selector, text="Equipo / Tipo de OT", style="CardWhiteTitle.TLabel").grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 6)
+        )
 
-        for i, item in enumerate(OT_BUTTONS):
-            btn = ClinicButton(
-                btn_frame,
-                text=item["label"],
-                parent_bg=self.C_BG,   # o self.C_CARD si prefieres blanco
-                bg=self.C_ACTION_BLUE,
-                hover_bg=self.C_ACTION_BLUE_H,
-                command=lambda k=item["key"]: self._ot_show_desc(k),
-                radius=14,
-                height=40,
-                font=("TkDefaultFont", 9, "bold"),
-            )
-            btn.grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 8, 0))
+        # selector.columnconfigure(0, weight=1)
+        # selector.columnconfigure(1, weight=0)
+
+        # Asegura que existan (por si no los inicializaste en __init__)
+        if not hasattr(self, "_ot_kind_var") or self._ot_kind_var is None:
+            self._ot_kind_var = tk.StringVar()
+        if not hasattr(self, "_ot_kind_map") or self._ot_kind_map is None:
+            self._ot_kind_map = {}
+
+        # Mapa label -> key
+        self._ot_kind_map = {item["label"]: item["key"] for item in OT_BUTTONS}
+
+        combo = ttk.Combobox(
+            selector,
+            textvariable=self._ot_kind_var,
+            values=[item["label"] for item in OT_BUTTONS],
+            state="readonly",
+            style="OT.TCombobox",
+            font=self.FONT_BODY,
+        )
+        combo.grid(row=1, column=0, sticky="ew", padx=(0, 10), ipady=4)
+
+        def _on_combo_change(event=None):
+            label = (self._ot_kind_var.get() or "").strip()
+            key = self._ot_kind_map.get(label)
+            if key:
+                self._ot_show_desc(key)
+
+        combo.bind("<<ComboboxSelected>>", _on_combo_change)
+
+        # Botón grande Guardar (guardamos referencia para habilitar/deshabilitar)
+        self._ot_save_btn = ClinicButton(
+            selector,
+            text="💾 Guardar OT",
+            parent_bg="#ffffff",
+            bg=self.C_ACTION_GREEN,
+            hover_bg=self.C_ACTION_GREEN_H,
+            command=self._ot_save_selected_kind,
+            radius=16,
+            height=44,
+            font=self.FONT_BTN_SM,
+            width=220,
+            shadow=True,
+            shadow_offset=1,
+            shadow_color="#1e293b",
+        )
+        self._ot_save_btn.grid(row=1, column=1, sticky="e")
+
+        # Selección inicial
+        self._ot_kind_var.set("UNIQUE")
+        _on_combo_change()
 
         # Panel descripción
         body = ttk.Frame(win, padding=(12, 0, 12, 12), style="App.TFrame")
@@ -1205,14 +1187,20 @@ class Launcher(tk.Tk):
         )
         self._ot_desc_box.configure(state="disabled")
 
-        # Selección inicial
-        self._ot_show_desc("UNIQUE")
+        # Si no hay PDF seleccionado, deshabilita Guardar y avisa
+        if self._pending_ot_src is None:
+            self._ot_save_btn.set_enabled(False)
+            messagebox.showinfo("OT", "Primero selecciona un PDF desde el botón principal.")
+        else:
+            self._ot_save_btn.set_enabled(True)
 
         # Si cierran la ventana, limpia referencia
         def _on_close():
             self._ot_win = None
             self._ot_title_lbl = None
             self._ot_desc_box = None
+            self._ot_file_lbl = None
+            self._ot_save_btn = None
             win.destroy()
 
         win.protocol("WM_DELETE_WINDOW", _on_close)
@@ -1234,6 +1222,77 @@ class Launcher(tk.Tk):
         self._ot_desc_box.insert(tk.END, item.get("desc", ""))
         self._ot_desc_box.configure(state="disabled")
 
+    def _ot_save_selected_kind(self):
+        # Lee lo elegido en el combo y llama al guardado real
+        label = (self._ot_kind_var.get() or "").strip()
+        key = self._ot_kind_map.get(label)
+
+        if not key:
+            messagebox.showwarning("Tipo no seleccionado", "Selecciona un tipo/equipo antes de guardar.")
+            return
+
+        self._ot_select_and_save(key)
+
+    def _ot_select_and_save(self, key: str):
+        self._ot_show_desc(key)
+
+        src = self._pending_ot_src
+        if src is None:
+            messagebox.showwarning("Sin PDF", "Primero selecciona un PDF desde el botón principal.")
+            return
+        if not src.exists():
+            messagebox.showerror("No encontrado", f"El PDF ya no existe:\n{src}")
+            return
+
+        desktop = _desktop_dir()
+        base = desktop / "OTs"
+        kind = key
+
+        if kind == "UNIQUE":
+            dst_dir = base / "ICLINIC" / "UNIQUE"
+        elif kind in ("HALCYON_1", "HALCYON_2"):
+            dst_dir = base / "ECM" / kind
+        else:
+            dst_dir = base / "OTs_OTROS" / kind
+
+        dst_dir.mkdir(parents=True, exist_ok=True)
+
+        # ✅ CASO UNIQUE: NO COPIAMOS el PDF aquí.
+        # Dejamos que P1 lo guarde con SU formato (y así queda solo 1 PDF en la carpeta).
+        if kind == "UNIQUE":
+            p1_script = HERE / "P1_ExtraerDatosPDF.py"
+            run_script(p1_script, args=[str(src), str(dst_dir)])
+            self.status_var.set("UNIQUE: ejecutando extracción + guardado desde P1…")
+            return
+
+        # ✅ RESTO (HALCYON, etc.): copiamos normalmente (porque no usan P1)
+        dst = dst_dir / src.name
+
+        if dst.exists():
+            ok = messagebox.askyesno("Archivo existe", f"Ya existe:\n{dst.name}\n\n¿Quieres reemplazarlo?")
+            if not ok:
+                self.status_var.set("No se reemplazó (cancelado).")
+                return
+
+        try:
+            shutil.copy2(src, dst)
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo copiar:\n{src}\n→ {dst}\n\n{e}")
+            return
+
+        try:
+            rel = dst.relative_to(_desktop_dir())
+            pretty = str(rel).replace("\\", "/")
+        except Exception:
+            pretty = str(dst)
+
+        self.status_var.set(f"OT guardada en: {pretty}")
+        messagebox.showinfo("Listo", f"Guardado en:\n{pretty}")
+
+        self._pending_ot_src = None
+        if self._ot_file_lbl is not None:
+            self._ot_file_lbl.configure(text="PDF seleccionado: Ninguno")
+
     def open_selected(self):
         p = self._get_selected_program()
         if not p:
@@ -1241,7 +1300,6 @@ class Launcher(tk.Tk):
             return
         self.status_var.set(f"Abriendo {p['id']}…")
         run_script(p["script"])
-
 
 def main():
     Launcher().mainloop()
