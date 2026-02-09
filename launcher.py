@@ -409,6 +409,16 @@ OT_BUTTONS = [
         ),
     },
     {
+        "key": "SIEMENS",
+        "label": "SIEMENS",
+        "desc": (
+            "Reportes de Servicio Técnico Siemens (Healthineers).\n\n"
+            "• Guarda/ordena PDFs en: Escritorio/OTs/SIEMENS\n"
+            "• Detecta automáticamente por texto “Reporte de Servicio Técnico”, "
+            "“Siemens Healthineers”, “Siemens Healthcare Equipos Médicos”, “SOMATOM”, etc."
+        ),
+    },
+    {
         "key": "AIL6",
         "label": "ARIA 16",
         "desc": (
@@ -547,6 +557,20 @@ def classify_ot_pdf(path: Path) -> str | None:
         if serial and serial in HALCYON_SERIAL_MAP:
             return HALCYON_SERIAL_MAP[serial]  # HALCYON_1 o HALCYON_2
         return "HALCYON"  # si no se puede distinguir cuál
+
+    # ---------------- SIEMENS ----------------
+    siemens_hits = [
+        "siemens healthineers",
+        "siemens healthcare",
+        "siemens healthcare equipos medicos",
+        "reporte de servicio tecnico",
+        "centro de atencion al cliente",
+        "somatom",
+        "teamplay fleet",
+    ]
+
+    if any(k in blob for k in siemens_hits):
+        return "SIEMENS"
 
     return None
 
@@ -719,8 +743,8 @@ class Launcher(tk.Tk):
 
         # Paleta clínica (más “software real”)
         self.C_BG = "#eaf2ff"          # fondo general (azul muy suave)
-        self.C_CARD = "#82b7fc"        # tarjeta levemente tintada
-        self.C_CARD_INNER = "#82b7fc"  # blanco puro solo para áreas de lectura
+        self.C_CARD = "#dbeafe"        # tarjeta levemente tintada (azul muy claro)
+        self.C_CARD_INNER = "#ffffff"  # interior blanco para mejor lectura
         self.C_BORDER = "#c9d9f2"      # borde suave
         self.C_TEXT = "#0f172a"        # texto principal
         self.C_MUTED = "#334155"       # texto secundario
@@ -751,6 +775,8 @@ class Launcher(tk.Tk):
 
         style.configure("CardWhite.TFrame", background="#ffffff")
         style.configure("CardWhiteTitle.TLabel", background="#ffffff", foreground=self.C_TEXT, font=self.FONT_H2)
+        # Texto secundario sobre tarjetas blancas
+        style.configure("CardWhiteMuted.TLabel", background="#ffffff", foreground=self.C_MUTED, font=self.FONT_BODY)
 
         # Frames base
         style.configure("App.TFrame", background=self.C_BG)
@@ -866,7 +892,7 @@ class Launcher(tk.Tk):
             parent_bg=self.C_CARD,
             bg=self.C_ACTION_BLUE,
             hover_bg=self.C_ACTION_BLUE_H,
-            command=self.import_ot_pdf,   # <-- ahora import_ot_pdf hará el “flujo completo”
+            command=self.import_ot_menu,   # Menú para elegir flujo de OT
             radius=16,
             height=44,
             font=self.FONT_BTN_SM,
@@ -909,10 +935,10 @@ class Launcher(tk.Tk):
 
         self.tree = ttk.Treeview(
             tree_frame,
-            columns=("id", "name"),
+            columns=("name",),
             show="headings",
             selectmode="browse",
-            height=4, #Espacio vertical para 4 programas P1, P2, P3, P4
+            height=4, #Espacio vertical aproximado
             xscrollcommand=xscroll.set,
             yscrollcommand=yscroll.set,
         )
@@ -926,39 +952,53 @@ class Launcher(tk.Tk):
         tree_frame.rowconfigure(0, weight=0)
         tree_frame.columnconfigure(0, weight=1)
 
-        self.tree.heading("id", text="ID")
         self.tree.heading("name", text="Programa")
 
-        # ID fijo; Programa se adapta al ancho disponible
-        self.tree.column("id", width=55, minwidth=55, stretch=False, anchor="center")
-        self.tree.column("name", width=1, minwidth=220, stretch=True, anchor="w")
+        # Solo se muestra el nombre del programa
+        self.tree.column("name", width=1, minwidth=260, stretch=True, anchor="w")
 
         self.tree.bind("<<TreeviewSelect>>", self.on_select)
         self.tree.bind("<Double-1>", lambda e: self.open_selected())
 
-        # Detail card
-        detail_outer = ttk.Frame(main, style="Card.TFrame", padding=14)
+        # Detail card (también con borde redondeado, igual que la columna izquierda)
+        detail_outer = RoundedCard(
+            main,
+            bg_card=self.C_CARD,
+            bg_parent=self.C_BG,
+            radius=20,
+            padding=14,
+            shadow=True,
+            shadow_offset=2,
+            shadow_color="#1e293b",
+            border_color=self.C_BORDER,
+            border_width=2,
+        )
         detail_outer.grid(row=0, column=1, sticky="nsew")
 
-        detail_outer.columnconfigure(0, weight=1)
-        detail_outer.rowconfigure(3, weight=1)
+        detail = detail_outer.inner
+        detail.configure(style="Card.TFrame")
 
-        self.detail_title = ttk.Label(detail_outer, text="Seleccione un programa…", style="CardTitle.TLabel")
+        detail.columnconfigure(0, weight=1)
+        detail.rowconfigure(3, weight=1)
+
+        self.detail_title = ttk.Label(detail, text="Seleccione un programa…", style="CardTitle.TLabel")
         self.detail_title.grid(row=0, column=0, sticky="w")
 
-        self.detail_sub = ttk.Label(detail_outer, text="", style="Muted.TLabel")
+        self.detail_sub = ttk.Label(detail, text="", style="Muted.TLabel")
         self.detail_sub.grid(row=1, column=0, sticky="w", pady=(6, 6))
 
-        self.detail_path = ttk.Label(detail_outer, text="", style="Muted.TLabel")
+        self.detail_path = ttk.Label(detail, text="", style="Muted.TLabel")
         self.detail_path.grid(row=2, column=0, sticky="w", pady=(0, 10))
 
-        self.desc = ScrolledText(detail_outer, wrap="word", height=10, bd=1, relief="solid")
+        self.desc = ScrolledText(detail, wrap="word", height=10, bd=0, relief="flat")
         self.desc.grid(row=3, column=0, sticky="nsew")
         self.desc.configure(
             font=self.FONT_BODY,
             spacing1=3,   # espacio antes de párrafo
             spacing2=2,   # espacio entre líneas
             spacing3=3,   # espacio después de párrafo
+            background=self.C_CARD_INNER,
+            highlightthickness=0,
         )
 
         self.desc.configure(state="disabled")
@@ -977,10 +1017,13 @@ class Launcher(tk.Tk):
         self._index_map.clear()
 
         for idx, p in enumerate(PROGRAMS):
+            # P1 se maneja desde el botón de OT, no se muestra en la lista
+            if p.get("id") == "P1":
+                continue
             hay = f"{p['id']} {p['title']} {p['subtitle']}".lower()
             if q and q not in hay:
                 continue
-            iid = self.tree.insert("", "end", values=(p["id"], p["title"]))
+            iid = self.tree.insert("", "end", values=(p["title"],))
             self._index_map.append((iid, idx))
 
         self.status_var.set(f"{len(self._index_map)} programa(s) disponible(s).")
@@ -1021,6 +1064,131 @@ class Launcher(tk.Tk):
         self.desc.configure(state="disabled")
 
         self.status_var.set(f"Seleccionado: {p['id']}")
+
+    def import_ot_menu(self):
+        """
+        Ventanita de selección de flujo para OT:
+        - Usar PDF desde Descargas (flujo actual import_ot_pdf).
+        - Abrir P1 (selección avanzada desde el propio P1).
+        """
+        win = tk.Toplevel(self)
+        win.title("Importar OT")
+        win.configure(background=self.C_BG)
+        # Ventana un poco más grande y cómoda
+        win.geometry("780x420")
+
+        win.columnconfigure(0, weight=1)
+        win.rowconfigure(1, weight=1)
+
+        header = ttk.Frame(win, padding=12, style="App.TFrame")
+        header.grid(row=0, column=0, sticky="ew")
+
+        ttk.Label(header, text="🗃️ Importar OT", style="AppTitle.TLabel").pack(anchor="w")
+        ttk.Label(
+            header,
+            text=(
+                "Elige el flujo que prefieras para trabajar con tus OTs.\n"
+                "Puedes seguir usando el flujo guiado desde Descargas o abrir directamente el Programa 1 (P1)."
+            ),
+            style="AppMuted.TLabel",
+            wraplength=740,
+            justify="left",
+        ).pack(anchor="w", pady=(6, 0))
+
+        body = ttk.Frame(win, padding=12, style="App.TFrame")
+        body.grid(row=1, column=0, sticky="nsew")
+        body.columnconfigure(0, weight=1)
+
+        # Tarjeta con las dos opciones
+        card = RoundedCard(
+            body,
+            bg_card="#ffffff",
+            bg_parent=self.C_BG,
+            radius=18,
+            padding=14,
+            shadow=False,
+            border_color=self.C_BORDER,
+            border_width=1,
+        )
+        card.grid(row=0, column=0, sticky="nsew")
+
+        inner = card.inner
+        inner.configure(style="CardWhite.TFrame")
+        inner.columnconfigure(0, weight=1)
+
+        ttk.Label(
+            inner,
+            text="¿Cómo quieres importar la OT?",
+            style="CardWhiteTitle.TLabel",
+        ).grid(row=0, column=0, sticky="w", pady=(0, 12))
+
+        # Botón: flujo actual (Descargas + clasificar OT)
+        def _use_downloads():
+            win.destroy()
+            self.import_ot_pdf()
+
+        ClinicButton(
+            inner,
+            text="📥 Usar PDF desde Descargas y guardar en Escritorio/OTs",
+            parent_bg="#ffffff",
+            bg=self.C_ACTION_BLUE,
+            hover_bg=self.C_ACTION_BLUE_H,
+            command=_use_downloads,
+            radius=16,
+            height=44,
+            font=self.FONT_BTN_SM,
+            width=380,
+            shadow=True,
+            shadow_offset=1,
+            shadow_color="#1e293b",
+        ).grid(row=1, column=0, sticky="w", pady=(4, 4))
+
+        ttk.Label(
+            inner,
+            text=(
+                "Flujo guiado recomendado:\n"
+                "• Abre directamente la carpeta Descargas para elegir el PDF.\n"
+                "• Luego eliges el tipo de OT y se guarda en la carpeta correspondiente del Escritorio.\n"
+                "• Para OTs UNIQUE se ejecuta internamente el Programa 1 (P1) para extraer y resumir los datos."
+            ),
+            style="CardWhiteMuted.TLabel",
+            wraplength=720,
+            justify="left",
+        ).grid(row=2, column=0, sticky="w", pady=(0, 14))
+
+        # Botón: abrir P1 directamente
+        def _open_p1():
+            win.destroy()
+            p1_script = HERE / "P1_ExtraerDatosPDF.py"
+            run_script(p1_script)
+
+        ClinicButton(
+            inner,
+            text="🧾 Abrir Programa 1 (P1) – Extraer datos desde PDF",
+            parent_bg="#ffffff",
+            bg=self.C_ACTION_GREEN,
+            hover_bg=self.C_ACTION_GREEN_H,
+            command=_open_p1,
+            radius=16,
+            height=44,
+            font=self.FONT_BTN_SM,
+            width=380,
+            shadow=True,
+            shadow_offset=1,
+            shadow_color="#1e293b",
+        ).grid(row=3, column=0, sticky="w", pady=(4, 4))
+
+        ttk.Label(
+            inner,
+            text=(
+                "Modo avanzado:\n"
+                "• Abre todo el Programa 1 (P1) en una ventana aparte.\n"
+                "• Ideal cuando quieres trabajar directamente con sus opciones de selección y exportación."
+            ),
+            style="CardWhiteMuted.TLabel",
+            wraplength=720,
+            justify="left",
+        ).grid(row=4, column=0, sticky="w", pady=(0, 4))
 
     def import_ot_pdf(self):
         # 1) Abrir selector en Descargas
@@ -1177,13 +1345,15 @@ class Launcher(tk.Tk):
         self._ot_title_lbl = ttk.Label(body, text="Seleccione un tipo…", style="CardTitle.TLabel")
         self._ot_title_lbl.grid(row=0, column=0, sticky="w", pady=(0, 10))
 
-        self._ot_desc_box = ScrolledText(body, wrap="word", bd=1, relief="solid")
+        self._ot_desc_box = ScrolledText(body, wrap="word", bd=0, relief="flat")
         self._ot_desc_box.grid(row=1, column=0, sticky="nsew")
         self._ot_desc_box.configure(
             font=self.FONT_BODY,
             spacing1=3,
             spacing2=2,
             spacing3=3,
+            background=self.C_CARD_INNER,
+            highlightthickness=0,
         )
         self._ot_desc_box.configure(state="disabled")
 
@@ -1248,10 +1418,13 @@ class Launcher(tk.Tk):
         base = desktop / "OTs"
         kind = key
 
+        # Regla de carpetas por tipo
         if kind == "UNIQUE":
             dst_dir = base / "ICLINIC" / "UNIQUE"
         elif kind in ("HALCYON_1", "HALCYON_2"):
             dst_dir = base / "ECM" / kind
+        elif kind == "SIEMENS":
+            dst_dir = base / "SIEMENS"
         else:
             dst_dir = base / "OTs_OTROS" / kind
 

@@ -23,8 +23,8 @@ class ExtractorPDF:
         # Esto hace que sea facil agregar nuevos campos o modificar existentes
         self.patrones = {
             # Campos de fecha y hora
-            "FECHA Y HORA DE INICIO": r"FECHA Y HORA DE INICIO:\s*([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2})",
-            "FECHA Y HORA DE FINALIZACIÓN": r"FECHA Y HORA DE FINALIZACIÓN:\s*([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2})",
+            "FECHA Y HORA DE INICIO": r"FECHA\s*Y\s*HORA\s*DE\s*INICI[O0]\s*:?\s*([0-9]{4}-[0-9]{2}-[0-9]{2}\s*[0-9]{2}:[0-9]{2})",
+            "FECHA Y HORA DE FINALIZACIÓN": r"FECHA\s*Y\s*HORA\s*DE\s*FINAL\w*\s*:?\s*([0-9]{4}-[0-9]{2}-[0-9]{2}\s*[0-9]{2}:[0-9]{2})",
             "FECHA PROGRAMADA": r"FECHA PROGRAMADA:\s*([0-9]{4}-[0-9]{2}-[0-9]{2})",
             "FECHA": r"FECHA:\s*([0-9]{4}-[0-9]{2}-[0-9]{2})",
             
@@ -34,9 +34,9 @@ class ExtractorPDF:
             "TIEMPO REAL DE PARO DEL ACTIVO": r"TIEMPO REAL DE PARO DEL ACTIVO:\s*([0-9]{2}:[0-9]{2}:[0-9]{2})",
             
             # Campos de texto
-            "N°": r"N°:\s*([a-zA-Z0-9]+)",
+            "N°": r"N\s*[°º\*o]?\s*:?\s*OT?\s*([0-9]{3,10})",
             "NOTAS": r"NOTAS:\s*([a-zA-Z0-9 ,.:-]{0,100})",
-            "DESCRIPCIÓN": r"DESCRIPCI[ÓO]N\s*:\s*([^\n\r]{0,200})", # DESCRIPCI[ÓO]N acepta DESCRIPCIÓN y DESCRIPCION.\s*:\s* permite Descripción:, Descripción :, DESCRIPCION : etc.
+            "DESCRIPCIÓN": r"DESCRIPCI[ÓO0Q6]N\s*:?\s*([^\n\r]{0,200})",
             "TIPO DE TAREA": r"TIPO DE TAREA:\s*([a-zA-Z0-9 ,.:-]{0,100})",
             # OJO: estos cuatro se rellenarán desde la tabla
             "DESCRIPCIÓN DE LA FALLA O SINTOMA": r"DESCRIPCIÓN DE LA FALLA O SINTOMA:\s*([a-zA-Z0-9 ,.:-]{0,200})",
@@ -51,26 +51,98 @@ class ExtractorPDF:
 
         }
 
+    def _norm_spaces(self, s: str) -> str:
+        """Colapsa whitespace raro del OCR (dobles espacios, tabs, NBSP)."""
+        if s is None:
+            return ""
+        s = s.replace("\u00A0", " ")  # NBSP
+        s = re.sub(r"[ \t]+", " ", s)
+        return s.strip()
+
+    def _upper_norm(self, s: str) -> str:
+        """Upper + colapsa espacios, para comparar tokens del OCR."""
+        return self._norm_spaces(s).upper()
+
+    def _clean_word(self, w: str) -> str:
+        """Normaliza palabra para matching (quita puntuación rara)."""
+        w = (w or "").strip()
+        w = w.replace("\u00A0", " ")
+        w = w.upper()
+        w = re.sub(r"[^A-Z0-9ÁÉÍÓÚÑ]+", "", w)
+        return w
+
+    def _sort_words(self, words):
+        # words: (x0,y0,x1,y1,word,block,line,wordno)
+        return sorted(words, key=lambda t: (round(t[1], 1), round(t[0], 1)))
+
+    def _find_phrase_bbox(self, words, phrase_tokens):
+        """
+        Busca una frase (lista de tokens) en words y devuelve bbox (x0,y0,x1,y1) o None.
+        Matching tolerante: limpia cada palabra/tok con _clean_word.
+        """
+        toks = [self._clean_word(t) for t in phrase_tokens if self._clean_word(t)]
+        if not toks:
+            return None
+
+        ws = self._sort_words(words)
+        cleaned = [self._clean_word(w[4]) for w in ws]
+
+        n = len(toks)
+        for i in range(0, len(cleaned) - n + 1):
+            if cleaned[i:i+n] == toks:
+                xs0 = [ws[j][0] for j in range(i, i+n)]
+                ys0 = [ws[j][1] for j in range(i, i+n)]
+                xs1 = [ws[j][2] for j in range(i, i+n)]
+                ys1 = [ws[j][3] for j in range(i, i+n)]
+                return (min(xs0), min(ys0), max(xs1), max(ys1))
+        return None
+
+    def _collect_text_in_rect(self, words, rect, y_tol=2.5):
+        """
+        Junta palabras dentro de un rectángulo (x0,y0,x1,y1) preservando líneas.
+        """
+        x0, y0, x1, y1 = rect
+        inside = []
+        for w in words:
+            wx0, wy0, wx1, wy1, txt, *_ = w
+            if wx0 >= x0 and wx1 <= x1 and wy0 >= y0 and wy1 <= y1:
+                inside.append(w)
+
+        inside = self._sort_words(inside)
+        if not inside:
+            return ""
+
+        lines = []
+        current = []
+        last_y = None
+
+        for w in inside:
+            y = w[1]
+            t = self._norm_spaces(w[4])
+            if not t:
+                continue
+            if last_y is None or abs(y - last_y) <= y_tol:
+                current.append(t)
+            else:
+                lines.append(" ".join(current))
+                current = [t]
+            last_y = y
+
+        if current:
+            lines.append(" ".join(current))
+
+        # Limpieza final
+        lines = [self._norm_spaces(l) for l in lines if self._norm_spaces(l)]
+        return "\n".join(lines).strip()
+
     # Extrae NOTAS desde el texto plano
     def extraer_notas_desde_texto(self, texto):
-        """
-        Extrae NOTAS desde el texto plano, permitiendo que se extienda
-        a 1–3 líneas como máximo, pero sin comerse secciones siguientes.
-
-        - Toma lo que está después de 'NOTAS:' en la MISMA línea.
-        - Mira unas pocas líneas siguientes (máx. 3) y las agrega solo si
-          parecen continuación (no un nuevo campo / encabezado).
-        """
         lineas = texto.splitlines()
 
-        labels_notas = [
-            "NOTAS:",   # forma más normal
-            "NOTAS :",  # por si hay espacio
-        ]
+        labels_notas = ["NOTAS:", "NOTAS :"]
+        labels_notas_norm = [self._upper_norm(x) for x in labels_notas]
 
-        # Tokens donde debemos cortar porque ya no es parte de NOTAS
         stop_tokens = [
-            # Otras etiquetas del formulario / secciones
             "DESCRIPCIÓN DE LA FALLA", "DESCRIPCION DE LA FALLA",
             "DESCRIPCIÓN:", "DESCRIPCION:",
             "TIPO DE TAREA",
@@ -83,9 +155,8 @@ class ExtractorPDF:
             "REVISION DE LAS TAREAS DE BAJA FRECUENCIA",
             "REVISION Y SEGUIMIENTO DE LAS RECOMENDACIONES",
             "HORAS DE FILAMENTO Y BEAM",
-            "OBSERVACIONES",            # OBSERVACIONES GENERALES también corta
-            "ACTIVOS",                  # <--- sección que se ve en tu captura
-            # Encabezados / pies típicos del documento
+            "OBSERVACIONES",
+            "ACTIVOS",
             "INTERNATIONAL CLINICS",
             "ORDEN DE TRABAJO",
             "CALIFICACIÓN", "CALIFICACION",
@@ -93,52 +164,53 @@ class ExtractorPDF:
             "REALIZADO CON",
             "TODOS LOS DERECHOS RESERVADOS",
             "ISO 9001", "9001:2015",
-            "N°:", "Nº:", "FECHA:"
+            "N°:", "Nº:", "FECHA:",
+            # ✅ agrega también campos de tiempo para que NO se mezcle con "DURACIÓN ESTIMADA"
+            "DURACIÓN ESTIMADA", "DURACION ESTIMADA",
+            "TIEMPO DE EJECUCIÓN", "TIEMPO DE EJECUCION",
         ]
+        stop_norm = [self._upper_norm(t) for t in stop_tokens]
 
-        max_lineas_extra = 3  # como mucho 3 líneas adicionales de continuación
+        max_lineas_extra = 3
 
         for idx, linea in enumerate(lineas):
-            upper = linea.upper()
+            upper = self._upper_norm(linea)
 
-            # ¿Esta línea contiene la etiqueta NOTAS?
-            etiqueta_en_linea = None
+            etiqueta_norm = None
             pos_etiqueta = -1
-            for etiqueta in labels_notas:
-                if etiqueta in upper:
-                    etiqueta_en_linea = etiqueta
-                    pos_etiqueta = upper.find(etiqueta)
+
+            for en in labels_notas_norm:
+                if en in upper:
+                    etiqueta_norm = en
+                    pos_etiqueta = upper.find(en)   # ✅ aquí estaba el bug
                     break
 
-            if etiqueta_en_linea is None:
+            if etiqueta_norm is None:
                 continue
 
-            # --- 1) Texto que viene después de 'NOTAS:' en la misma línea ---
-            inicio_contenido = pos_etiqueta + len(etiqueta_en_linea)
+            # lo que viene después de NOTAS: en la misma línea
+            inicio_contenido = pos_etiqueta + len(etiqueta_norm)
             cola = linea[inicio_contenido:].strip(" :.-\t")
+            cola = re.sub(r"^\s*NOTAS\s*:?\s*", "", cola, flags=re.IGNORECASE)
 
             partes = []
             if cola:
                 partes.append(cola)
 
-            # --- 2) Mirar unas pocas líneas siguientes como posible continuación ---
+            # líneas siguientes (máx 3) si parecen continuación
             j = idx + 1
             extra = 0
             while j < len(lineas) and extra < max_lineas_extra:
                 l = lineas[j].strip()
                 if not l:
-                    # línea vacía → terminan las NOTAS
                     break
 
-                upper_l = l.upper()
+                upper_l = self._upper_norm(l)
 
-                # Si contiene algún token de corte, dejamos de acumular
-                if any(tok in upper_l for tok in stop_tokens):
+                if any(tok in upper_l for tok in stop_norm):
                     break
 
-                # Si la línea parece un NUEVO CAMPO tipo 'XXXX: algo' en mayúsculas, cortamos
-                # (ej: 'DESCRIPCIÓN : ...', 'GENERÓ: ...', etc.)
-                import re
+                # si parece un campo nuevo "XXXX: ..."
                 if re.match(r'^[A-ZÁÉÍÓÚÑ0-9 ]{2,30}:', upper_l):
                     break
 
@@ -150,21 +222,18 @@ class ExtractorPDF:
             notas = " ".join(notas.split())
             return notas
 
-        # Si nunca se encontró NOTAS
         return ""
 
     # Extrae el texto completo del PDF
     def extraer_texto_pdf(self, ruta_pdf):
         try:
             documento = fitz.open(ruta_pdf)
-            texto_completo = ""
-            
-            for pagina in documento:
-                texto_completo += pagina.get_text()
-            
+            partes = []
+            for i, pagina in enumerate(documento):
+                # sort=True ordena por posición (y, luego x), MUY importante en OCR “sándwich”
+                partes.append(pagina.get_text("text", sort=True))
             documento.close()
-            return texto_completo
-            
+            return "\n".join(partes)
         except Exception as e:
             print(f"Error al abrir el PDF: {e}")
             return ""
@@ -235,7 +304,7 @@ class ExtractorPDF:
         
         # Si existe el patrón pero no se encontró coincidencia
         return "No encontrado"
-    
+
     # Extrae tablas del PDF usando Camelot (debug opcional)
     def extraer_tabla_camelot(self, ruta_pdf):
         tablas = camelot.read_pdf(ruta_pdf, pages="all")
@@ -463,23 +532,15 @@ class ExtractorPDF:
 
     # =============== NUEVO: extraer DESCRIPCIÓN DE LA FALLA O SINTOMA desde texto plano ===============
     def extraer_descripcion_falla_desde_texto(self, texto):
-        """
-        Extrae la descripción de la falla o síntoma directamente del texto plano,
-        tomando lo que está a la derecha de
-        'DESCRIPCIÓN DE LA FALLA O SINTOMA'
-        y las líneas siguientes hasta otra etiqueta o encabezado/pie.
-        """
-        # Variantes posibles del texto de la etiqueta
         labels_falla = [
             "DESCRIPCIÓN DE LA FALLA O SINTOMA",
             "DESCRIPCION DE LA FALLA O SINTOMA",
             "DESCRIPCIÓN DE LA FALLA O SÍNTOMA",
             "DESCRIPCION DE LA FALLA O SÍNTOMA",
         ]
+        labels_falla_norm = [self._upper_norm(x) for x in labels_falla]
 
-        # Tokens donde debemos cortar porque ya no es parte de la descripción
         stop_tokens = [
-            # otras etiquetas de subtareas
             "FALLA O SINTOMA",
             "FALLA O SÍNTOMA",
             "REVISION DE LAS TAREAS DE BAJA FRECUENCIA",
@@ -491,7 +552,6 @@ class ExtractorPDF:
             "REPUESTOS",
             "RESPUESTOS",
             "OBSERVACIONES",
-            # Encabezados / pies típicos del documento
             "INTERNATIONAL CLINICS",
             "ORDEN DE TRABAJO",
             "CALIFICACIÓN",
@@ -500,88 +560,198 @@ class ExtractorPDF:
             "REALIZADO CON",
             "TODOS LOS DERECHOS RESERVADOS",
             "ISO 9001", "9001:2015",
-            "N°:", "Nº:", "FECHA:"
+            "N°:", "Nº:", "FECHA:",
+            "N*:", "NO:", "N O:",
         ]
+        stop_norm = [self._upper_norm(t) for t in stop_tokens]  # ✅ una vez
 
         lineas = texto.splitlines()
 
         for idx, linea in enumerate(lineas):
-            upper = linea.upper()
+            upper = self._upper_norm(linea)
 
-            # ¿Esta línea contiene la etiqueta?
-            etiqueta_en_linea = None
-            for etiqueta in labels_falla:
-                if etiqueta in upper:
-                    etiqueta_en_linea = etiqueta
+            etiqueta_norm = None
+            for lf in labels_falla_norm:
+                if lf in upper:
+                    etiqueta_norm = lf
                     break
-
-            if not etiqueta_en_linea:
+            if not etiqueta_norm:
                 continue
 
-            # --- 1) Tomamos lo que está después de la etiqueta en la misma línea ---
-            pos = upper.find(etiqueta_en_linea)
-            inicio_contenido = pos + len(etiqueta_en_linea)
+            pos = upper.find(etiqueta_norm)
+            inicio_contenido = pos + len(etiqueta_norm)
             cola = linea[inicio_contenido:].strip(" :.-\t")
 
-            partes_desc = []
+            partes = []
             if cola:
-                partes_desc.append(cola)
+                partes.append(cola)
 
-            # --- 2) Miramos líneas siguientes hasta encontrar un stop_token ---
             j = idx + 1
             while j < len(lineas):
                 l = lineas[j].strip()
                 if not l:
-                    # Línea totalmente vacía: asumimos que terminó la descripción
                     break
 
-                upper_l = l.upper()
-
-                # Si contiene algún token de corte, se termina la descripción
-                if any(tok in upper_l for tok in stop_tokens):
+                upper_l = self._upper_norm(l)
+                if any(tok in upper_l for tok in stop_norm):
                     break
 
-                partes_desc.append(l)
+                partes.append(l)
                 j += 1
 
-            descripcion = " ".join(partes_desc).strip()
-            if not descripcion:
-                return ""
-
-            # --- 3) Como seguridad extra, cortar si aún se coló algo de encabezado ---
-            desc_upper = descripcion.upper()
-            for tok in [
-                "INTERNATIONAL CLINICS",
-                "ORDEN DE TRABAJO",
-                "PÁG", "PAG ", "REALIZADO CON",
-                "TODOS LOS DERECHOS RESERVADOS",
-                "ISO 9001", "9001:2015"
-            ]:
-                pos_tok = desc_upper.find(tok)
-                if pos_tok != -1:
-                    descripcion = descripcion[:pos_tok].rstrip()
-                    desc_upper = descripcion.upper()
-                    break
-
-            # Limpiar espacios repetidos
+            descripcion = " ".join(partes).strip()
             descripcion = " ".join(descripcion.split())
             return descripcion
 
-        # Si nunca se encontró la etiqueta
         return ""
+
+    def extraer_subtareas_por_coordenadas(self, ruta_pdf: str) -> dict:
+        """
+        Extrae campos SUBTAREAS usando palabras + coordenadas.
+        Mucho más robusto en PDF OCR (tipo 'sandwich') que Camelot.
+        """
+        targets = [
+            # (clave_canonica, lista_de_variantes_de_frase)
+            ("DESCRIPCIÓN DE LA FALLA O SINTOMA", [
+                ["DESCRIPCIÓN", "DE", "LA", "FALLA", "O", "SINTOMA"],
+                ["DESCRIPCION", "DE", "LA", "FALLA", "O", "SINTOMA"],
+                ["DESCRIPCIÓN", "DE", "LA", "FALLA", "O", "SÍNTOMA"],
+                ["DESCRIPCION", "DE", "LA", "FALLA", "O", "SÍNTOMA"],
+            ]),
+            ("ACCIONES REALIZADAS", [
+                ["ACCIONES", "REALIZADAS"],
+            ]),
+            ("ACCIONES PENDIENTES", [
+                ["ACCIONES", "PENDIENTES"],
+            ]),
+            ("RESPUESTOS SOLICITADOS", [
+                ["RESPUESTOS", "SOLICITADOS"],
+                ["REPUESTOS", "SOLICITADOS"],
+            ]),
+            ("REVISION DE LAS TAREAS DE BAJA FRECUENCIA", [
+                ["REVISION", "DE", "LAS", "TAREAS", "DE", "BAJA", "FRECUENCIA"],
+                ["REVISIÓN", "DE", "LAS", "TAREAS", "DE", "BAJA", "FRECUENCIA"],
+            ]),
+            ("REVISION Y SEGUIMIENTO DE LAS RECOMENDACIONES", [
+                ["REVISION", "Y", "SEGUIMIENTO", "DE", "LAS", "RECOMENDACIONES"],
+                ["REVISIÓN", "Y", "SEGUIMIENTO", "DE", "LAS", "RECOMENDACIONES"],
+            ]),
+            ("HORAS DE FILAMENTO Y BEAM", [
+                ["HORAS", "DE", "FILAMENTO", "Y", "BEAM"],
+            ]),
+            ("REPUESTOS A SOLICITAR", [
+                ["REPUESTOS", "A", "SOLICITAR"],
+            ]),
+            ("OBSERVACIONES", [
+                ["OBSERVACIONES"],
+            ]),
+        ]
+
+        out = {}
+        doc = fitz.open(ruta_pdf)
+
+        try:
+            for page in doc:
+                words = page.get_text("words")
+                if not words:
+                    continue
+
+                w = page.rect.width
+                # 1) Encontrar bboxes de todas las etiquetas (y guardarlas por Y)
+                found = []
+                for key, variants in targets:
+                    bbox = None
+                    for phrase in variants:
+                        bbox = self._find_phrase_bbox(words, phrase)
+                        if bbox:
+                            # Caso especial OBSERVACIONES GENERALES: si justo después aparece GENERALES, ignorar
+                            if key == "OBSERVACIONES":
+                                # buscar en la misma línea si aparece "GENERALES"
+                                y_line = bbox[1]
+                                same_line = [ww for ww in words if abs(ww[1] - y_line) <= 2.5]
+                                same_line = self._sort_words(same_line)
+                                # words posteriores a la etiqueta
+                                after = [ww for ww in same_line if ww[0] > bbox[2] - 1]
+                                after_txt = " ".join(self._clean_word(ww[4]) for ww in after[:2])
+                                if "GENERALES" in after_txt:
+                                    bbox = None
+                            if bbox:
+                                found.append((key, bbox))
+                                break
+
+                if not found:
+                    continue
+
+                found.sort(key=lambda t: t[1][1])  # por y0
+                # ✅ quitar duplicados (quedarse con el primero por y)
+                unique = {}
+                for k, bb in found:
+                    if k not in unique:
+                        unique[k] = bb
+                found = [(k, bb) for k, bb in unique.items()]
+                found.sort(key=lambda t: t[1][1])
+
+                # 2) Para cada etiqueta, recortar hasta la siguiente etiqueta
+                for i, (key, bbox) in enumerate(found):
+                    x0, y0, x1, y1 = bbox
+                    next_y = page.rect.height - 5
+                    if i + 1 < len(found):
+                        next_y = found[i+1][1][1] - 2
+
+                    # rect de valor: a la derecha (y, si el label es largo, cae a un x razonable)
+                    x_start = min(x1 + 4, w * 0.55)
+                    if x_start > w * 0.85:  # label demasiado largo
+                        x_start = w * 0.25
+
+                    rect = (x_start, y0 - 1, w - 8, next_y)
+
+                    val = self._collect_text_in_rect(words, rect)
+                    val = val.strip()
+
+                    # Si salió vacío, intentar "debajo" (algunos formularios ponen valor bajo el label)
+                    if not val:
+                        rect2 = (w * 0.25, y1 + 1, w - 8, next_y)
+                        val = self._collect_text_in_rect(words, rect2).strip()
+
+                    if val:
+                        # Evitar contaminación: si el valor contiene otras etiquetas, cortarlo
+                        cut_markers = [
+                            "ACCIONES REALIZADAS", "ACCIONES PENDIENTES",
+                            "RESPUESTOS SOLICITADOS", "REPUESTOS SOLICITADOS",
+                            "REVISION DE LAS TAREAS", "REVISION Y SEGUIMIENTO",
+                            "HORAS DE FILAMENTO", "REPUESTOS A SOLICITAR",
+                            "OBSERVACIONES"
+                        ]
+                        val_u = self._upper_norm(val)
+                        for m in cut_markers:
+                            m_u = self._upper_norm(m)
+                            if m_u in val_u and m_u != self._upper_norm(key):
+                                pos = val_u.find(m_u)
+                                if pos > 0:
+                                    val = val[:pos].rstrip()
+                                    break
+
+                        val = self._norm_spaces(val.replace("\n", " \n ").replace("  ", " "))
+                        val = "\n".join([self._norm_spaces(x) for x in val.splitlines() if self._norm_spaces(x)]).strip()
+
+                        # guardar (si ya existe, concatenar)
+                        if key in out and out[key]:
+                            if val not in out[key]:
+                                out[key] = (out[key] + "\n" + val).strip()
+                        else:
+                            out[key] = val
+
+            print("\n--- SUBTAREAS COORD ---")
+            for k,v in out.items():
+                print(f"[{k}] -> {v}\n")
+
+            return out
+        finally:
+            doc.close()
 
     # =============== NUEVO: extraer OBSERVACIONES desde texto plano ===============
     def extraer_observaciones_desde_texto(self, texto):
-        """
-        Extrae las OBSERVACIONES directamente del texto plano.
-        Toma lo que está a la derecha de una línea que contenga 'OBSERVACIONES'
-        (pero NO 'OBSERVACIONES GENERALES') y las líneas siguientes
-        hasta encontrar otra etiqueta o encabezado/pie.
-        """
-        labels_obs = ["OBSERVACIONES"]
-
         stop_tokens = [
-            # otras etiquetas de subtareas
             "DESCRIPCIÓN DE LA FALLA",
             "DESCRIPCION DE LA FALLA",
             "FALLA O SINTOMA",
@@ -593,7 +763,6 @@ class ExtractorPDF:
             "REPUESTOS",
             "RESPUESTOS",
             "OBSERVACIONES GENERALES",
-            # encabezados / pies típicos
             "INTERNATIONAL CLINICS",
             "ORDEN DE TRABAJO",
             "CALIFICACIÓN",
@@ -604,58 +773,36 @@ class ExtractorPDF:
             "ISO 9001", "9001:2015",
             "N°:", "Nº:", "FECHA:"
         ]
+        stop_norm = [self._upper_norm(t) for t in stop_tokens]  # ✅ una vez
 
         lineas = texto.splitlines()
 
         for idx, linea in enumerate(lineas):
-            upper = linea.upper()
+            upper = self._upper_norm(linea)
 
-            # Debe contener OBSERVACIONES pero NO OBSERVACIONES GENERALES
             if "OBSERVACIONES" in upper and "OBSERVACIONES GENERALES" not in upper:
-                # Encontramos la línea de inicio
-                etiqueta = "OBSERVACIONES"
-                pos = upper.find(etiqueta)
-                inicio_contenido = pos + len(etiqueta)
+                pos = upper.find("OBSERVACIONES")
+                inicio_contenido = pos + len("OBSERVACIONES")
                 cola = linea[inicio_contenido:].strip(" :.-\t")
 
                 partes = []
                 if cola:
                     partes.append(cola)
 
-                # Continuar con líneas siguientes
                 j = idx + 1
                 while j < len(lineas):
                     l = lineas[j].strip()
                     if not l:
                         break
 
-                    upper_l = l.upper()
-                    if any(tok in upper_l for tok in stop_tokens):
+                    upper_l = self._upper_norm(l)
+                    if any(tok in upper_l for tok in stop_norm):
                         break
 
                     partes.append(l)
                     j += 1
 
                 obs = " ".join(partes).strip()
-                if not obs:
-                    return ""
-
-                # Limpieza final de posibles colas de encabezado
-                obs_upper = obs.upper()
-                for tok in [
-                    "INTERNATIONAL CLINICS",
-                    "ORDEN DE TRABAJO",
-                    "PÁG", "PAG ",
-                    "REALIZADO CON",
-                    "TODOS LOS DERECHOS RESERVADOS",
-                    "ISO 9001", "9001:2015"
-                ]:
-                    pos_tok = obs_upper.find(tok)
-                    if pos_tok != -1:
-                        obs = obs[:pos_tok].rstrip()
-                        obs_upper = obs.upper()
-                        break
-
                 obs = " ".join(obs.split())
                 return obs
 
@@ -731,16 +878,67 @@ class ExtractorPDF:
         fecha_termino_str = resultados["FECHA Y HORA DE FINALIZACIÓN"]
         formato_fecha = "%Y-%m-%d %H:%M"
 
-        fecha_inicio = datetime.strptime(fecha_inicio_str, formato_fecha)
-        fecha_termino = datetime.strptime(fecha_termino_str, formato_fecha)
-        duracion = fecha_termino - fecha_inicio
-        resultados["DURACION REGISTRADA"] = duracion
+        try:
+            fecha_inicio = datetime.strptime(fecha_inicio_str, formato_fecha)
+            fecha_termino = datetime.strptime(fecha_termino_str, formato_fecha)
+            resultados["DURACION REGISTRADA"] = (fecha_termino - fecha_inicio)
+        except Exception:
+            resultados["DURACION REGISTRADA"] = "No calculable"
 
         # 1) Intentar rellenar SUBTAREAS desde las tablas
         if ruta_pdf is not None:
             subtareas_tabla = self.extraer_subtareas_desde_tabla(ruta_pdf)
             if subtareas_tabla:
                 resultados = self.integrar_subtareas_en_datos(resultados, subtareas_tabla)
+
+        # 1b) Fallback fuerte: coordenadas (para PDF escaneado / OCR)
+        if ruta_pdf is not None:
+            subt_coords = self.extraer_subtareas_por_coordenadas(ruta_pdf)
+            if subt_coords:
+                resultados = self.integrar_subtareas_en_datos(resultados, subt_coords)
+
+
+        # 1.b) Fallback robusto: SUBTAREAS por coordenadas (OCR sandwich)
+        keys_sub = [
+            "DESCRIPCIÓN DE LA FALLA O SINTOMA",
+            "ACCIONES REALIZADAS",
+            "ACCIONES PENDIENTES",
+            "RESPUESTOS SOLICITADOS",
+            "REVISION DE LAS TAREAS DE BAJA FRECUENCIA",
+            "REVISION Y SEGUIMIENTO DE LAS RECOMENDACIONES",
+            "HORAS DE FILAMENTO Y BEAM",
+            "REPUESTOS A SOLICITAR",
+            "OBSERVACIONES",
+        ]
+
+        def _malo(v: str) -> bool:
+            v = v or ""
+            vu = self._upper_norm(v)
+            if v in ("", "No encontrado"):
+                return True
+            # contaminación típica
+            return any(x in vu for x in [
+                "ACCIONES REALIZADAS", "ACCIONES PENDIENTES",
+                "RESPUESTOS SOLICITADOS", "REPUESTOS SOLICITADOS"
+            ])
+
+        need_sub = any(_malo(resultados.get(k, "")) for k in keys_sub)
+
+
+        if ruta_pdf is not None and need_sub:
+            sub_coord = self.extraer_subtareas_por_coordenadas(ruta_pdf)
+            if sub_coord:
+                # Solo rellenar lo que falte o lo que venga contaminado
+                for k, v in sub_coord.items():
+                    cur = resultados.get(k, "")
+                    cur_u = self._upper_norm(cur)
+                    # si falta o si trae “ACCIONES…” dentro (contaminación), reemplazar
+                    contaminado = any(x in cur_u for x in [
+                        "ACCIONES REALIZADAS", "ACCIONES PENDIENTES",
+                        "RESPUESTOS SOLICITADOS", "REPUESTOS SOLICITADOS"
+                    ])
+                    if (not cur) or cur == "No encontrado" or contaminado:
+                        resultados[k] = v
 
         # 2) Fallback: DESCRIPCIÓN DE LA FALLA O SINTOMA desde texto plano
         valor_falla = resultados.get("DESCRIPCIÓN DE LA FALLA O SINTOMA", "")
