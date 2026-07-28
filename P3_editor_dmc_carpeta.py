@@ -174,25 +174,20 @@ class DicomImageViewer(tk.Toplevel):
         self.photo = None
         self.zoom = 1.0
         self.fit_mode = True
+        self.base_fit_zoom = 1.0  # zoom base cuando está “ajustada a la vista”
         self._is_fullscreen = False
         self._canvas_img_id = None
         self.series_paths = []
         self.series_index = 0
 
-        # Barra superior
+        # Barra superior (solo información de la imagen)
         top = ttk.Frame(self, padding=10, style="Panel.TFrame")
         top.pack(fill="x")
 
         self.var_info = tk.StringVar(value="(sin imagen)")
         ttk.Label(top, textvariable=self.var_info, style="Muted.TLabel", background=master.C_PANEL).pack(side="left")
 
-        ttk.Button(top, text="Ajustar", style="Ghost.TButton", command=self.fit_to_view).pack(side="right", padx=(8,0))
-        ttk.Button(top, text="100%", style="Ghost.TButton", command=lambda: self.set_zoom(1.0)).pack(side="right", padx=(8,0))
-        ttk.Button(top, text="Zoom +", style="Ghost.TButton", command=lambda: self.zoom_step(1.15)).pack(side="right", padx=(8,0))
-        ttk.Button(top, text="Zoom -", style="Ghost.TButton", command=lambda: self.zoom_step(1/1.15)).pack(side="right", padx=(8,0))
-        ttk.Button(top, text="Pantalla completa (F11)", style="Ghost.TButton", command=self.toggle_fullscreen).pack(side="right", padx=(8,0))
-
-        # Canvas + scrollbars
+        # Zona central: canvas + scrollbars + barra de controles a la derecha
         wrap = ttk.Frame(self, padding=10, style="Panel.TFrame")
         wrap.pack(fill="both", expand=True)
 
@@ -203,6 +198,57 @@ class DicomImageViewer(tk.Toplevel):
         vbar.grid(row=0, column=1, sticky="ns")
         hbar = ttk.Scrollbar(wrap, orient="horizontal", command=self.canvas.xview)
         hbar.grid(row=1, column=0, sticky="ew")
+
+        # Barra vertical de controles a la derecha
+        controls = ttk.Frame(wrap, padding=(8, 4), style="Panel.TFrame")
+        controls.grid(row=0, column=2, rowspan=2, sticky="ns", padx=(10, 0))
+
+        ttk.Label(controls, text="Vista DICOM", style="Muted.TLabel").pack(pady=(0, 6), anchor="w")
+
+        # Botones de navegación
+        ttk.Button(
+            controls, text="◀ Anterior",
+            style="Ghost.TButton",
+            command=lambda: self.next_image(-1)
+        ).pack(fill="x", pady=(0, 4))
+
+        ttk.Button(
+            controls, text="Siguiente ▶",
+            style="Ghost.TButton",
+            command=lambda: self.next_image(1)
+        ).pack(fill="x", pady=(0, 10))
+
+        # Botones de zoom / ajuste
+        ttk.Button(
+            controls, text="Ajustar",
+            style="Ghost.TButton",
+            command=self.fit_to_view
+        ).pack(fill="x", pady=(0, 4))
+
+        ttk.Button(
+            controls, text="100%",
+            style="Ghost.TButton",
+            command=lambda: self.set_zoom(1.0)
+        ).pack(fill="x", pady=(0, 4))
+
+        ttk.Button(
+            controls, text="Zoom +",
+            style="Ghost.TButton",
+            command=lambda: self.zoom_step(1.15)
+        ).pack(fill="x", pady=(0, 4))
+
+        ttk.Button(
+            controls, text="Zoom -",
+            style="Ghost.TButton",
+            command=lambda: self.zoom_step(1/1.15)
+        ).pack(fill="x", pady=(0, 10))
+
+        # Botón para “Expandir”: agranda visiblemente la IMAGEN dentro de la Vista DICOM
+        ttk.Button(
+            controls, text="🔍 Expandir imagen (F11)",
+            style="Ghost.TButton",
+            command=self._expand_image_once
+        ).pack(fill="x")
 
         self.canvas.configure(yscrollcommand=vbar.set, xscrollcommand=hbar.set)
         wrap.rowconfigure(0, weight=1)
@@ -220,8 +266,8 @@ class DicomImageViewer(tk.Toplevel):
         self.canvas.bind("<ButtonPress-1>", self._start_pan)
         self.canvas.bind("<B1-Motion>", self._do_pan)
 
-        self.bind("<F11>", lambda e: self.toggle_fullscreen())
-        self.bind("<Escape>", lambda e: self.exit_fullscreen())
+        # F11 agranda solo la IMAGEN (no cambia la ventana)
+        self.bind("<F11>", lambda e: self._expand_image_once())
 
         # Cerrar: no destruir la app, solo esta ventana
         self.protocol("WM_DELETE_WINDOW", self.withdraw)
@@ -231,7 +277,12 @@ class DicomImageViewer(tk.Toplevel):
         if title:
             self.title(f"Visor DICOM — {title}")
             self.var_info.set(title)
-        self.after_idle(self.fit_to_view)
+        # Si estamos en modo "ajustar", se recalcula el zoom; si el usuario
+        # ya hizo zoom manual (fit_mode=False), se mantiene el nivel de zoom.
+        if self.fit_mode:
+            self.after_idle(self.fit_to_view)
+        else:
+            self.after_idle(self._render)
 
     def _render(self):
         if self.img_original is None:
@@ -243,13 +294,23 @@ class DicomImageViewer(tk.Toplevel):
         resized = self.img_original.resize((new_w, new_h), Image.Resampling.LANCZOS)
         self.photo = ImageTk.PhotoImage(resized)
 
+        # Centramos la imagen en el canvas
+        cw = max(1, self.canvas.winfo_width())
+        ch = max(1, self.canvas.winfo_height())
+        cx = cw // 2
+        cy = ch // 2
+
         if self._canvas_img_id is None:
             self.canvas.delete("all")
-            self._canvas_img_id = self.canvas.create_image(0, 0, anchor="nw", image=self.photo)
+            self._canvas_img_id = self.canvas.create_image(cx, cy, anchor="center", image=self.photo)
         else:
             self.canvas.itemconfig(self._canvas_img_id, image=self.photo)
+            self.canvas.coords(self._canvas_img_id, cx, cy)
 
-        self.canvas.configure(scrollregion=(0, 0, new_w, new_h))
+        # Scrollregion cubre al menos la imagen, permitiendo desplazamiento cuando es grande
+        scroll_w = max(cw, new_w)
+        scroll_h = max(ch, new_h)
+        self.canvas.configure(scrollregion=(0, 0, scroll_w, scroll_h))
 
     def set_zoom(self, value: float):
         self.fit_mode = False
@@ -269,7 +330,8 @@ class DicomImageViewer(tk.Toplevel):
         cw = max(1, self.canvas.winfo_width() - 10)
         ch = max(1, self.canvas.winfo_height() - 10)
         z = min(cw / self.img_original.width, ch / self.img_original.height)
-        self.zoom = max(0.05, min(z, 20.0))
+        self.base_fit_zoom = max(0.05, min(z, 20.0))
+        self.zoom = self.base_fit_zoom
         self._render()
 
     def _on_resize(self, _evt=None):
@@ -298,23 +360,27 @@ class DicomImageViewer(tk.Toplevel):
     def _do_pan(self, event):
         self.canvas.scan_dragto(event.x, event.y, gain=1)
 
-    def toggle_fullscreen(self):
-        self._is_fullscreen = not self._is_fullscreen
-        self.attributes("-fullscreen", self._is_fullscreen)
-        # en fullscreen normalmente conviene re-ajustar
-        if self.fit_mode:
-            self.fit_to_view()
+    def _expand_image_once(self):
+        """
+        Expande claramente la imagen respecto al tamaño “ajustar a vista”.
+        No toca el tamaño de la ventana ni crea otra interfaz.
+        """
+        if self.img_original is None:
+            return
+        # Recalcula el tamaño “ajustado” actual
+        self.fit_to_view()
+        base = self.base_fit_zoom
+        # Aumentamos la imagen al doble del tamaño ajustado
+        new_zoom = max(0.05, min(base * 2.0, 20.0))
+        self.fit_mode = False
+        self.set_zoom(new_zoom)
 
-    def exit_fullscreen(self):
-        if self._is_fullscreen:
-            self._is_fullscreen = False
-            self.attributes("-fullscreen", False)
-            if self.fit_mode:
-                self.fit_to_view()
 
     def set_series(self, paths: list[str], start_index: int = 0):
         self.series_paths = list(paths or [])
         self.series_index = max(0, min(int(start_index), len(self.series_paths) - 1)) if self.series_paths else 0
+        # Al cargar una nueva serie, por defecto ajustamos a la vista
+        self.fit_mode = True
         self._load_current()
 
     def _load_current(self):
@@ -447,6 +513,7 @@ class DicomPatientFolderEditor(tk.Tk):
         self._build_ui()
         self._wire_traces()
         self.nb.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+        # Ajustar ventana a un tamaño cómodo (no pantalla completa)
         self.after(50, self._maximize_window)
 
     def _is_dicom_file(self, path: str) -> bool:
@@ -482,23 +549,22 @@ class DicomPatientFolderEditor(tk.Tk):
             return False
 
     def _maximize_window(self):
+        """
+        Ajusta la ventana principal a un tamaño amplio pero NO pantalla completa.
+        Se centra y ocupa aprox. el 80–85% de la pantalla.
+        """
         self.update_idletasks()
-        # Windows
-        try:
-            self.state("zoomed")
-            return
-        except Exception:
-            pass
-        # Linux (algunos WM soportan esto)
-        try:
-            self.attributes("-zoomed", True)
-            return
-        except Exception:
-            pass
-        # Fallback: ocupar pantalla completa con geometry
-        w = self.winfo_screenwidth()
-        h = self.winfo_screenheight()
-        self.geometry(f"{w}x{h}+0+0")
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+
+        # Ocupa un porcentaje de la pantalla, con límites razonables
+        w = min(1400, int(sw * 0.85))
+        h = min(900, int(sh * 0.85))
+
+        x = max(0, (sw - w) // 2)
+        y = max(0, (sh - h) // 2)
+
+        self.geometry(f"{w}x{h}+{x}+{y}")
 
     def _on_tab_changed(self, _evt=None):
         # Si el usuario entra al tab de vista, reajusta con el tamaño real del canvas

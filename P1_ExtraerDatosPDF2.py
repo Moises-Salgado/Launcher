@@ -808,221 +808,6 @@ class ExtractorPDF:
 
         return ""
 
-    
-    def _collapse_value(self, s: str) -> str:
-        """Deja el valor en una sola línea, limpio y legible para TXT/Excel."""
-        if s is None:
-            return ""
-        s = str(s).replace("\u00A0", " ")
-        s = s.replace("\n", " ")
-        s = re.sub(r"\s+", " ", s).strip()
-        return s
-
-    def _extract_subtareas_words_band(self, ruta_pdf: str) -> dict:
-        """
-        Extrae SUBTAREAS por bandas verticales entre etiquetas consecutivas.
-        Soporta casos donde el valor queda arriba y/o abajo del label.
-        """
-        targets = [
-            ("DESCRIPCIÓN DE LA FALLA O SINTOMA", [
-                ["DESCRIPCIÓN", "DE", "LA", "FALLA", "O", "SINTOMA"],
-                ["DESCRIPCION", "DE", "LA", "FALLA", "O", "SINTOMA"],
-                ["DESCRIPCIÓN", "DE", "LA", "FALLA", "O", "SÍNTOMA"],
-                ["DESCRIPCION", "DE", "LA", "FALLA", "O", "SÍNTOMA"],
-            ]),
-            ("ACCIONES REALIZADAS", [["ACCIONES", "REALIZADAS"]]),
-            ("ACCIONES PENDIENTES", [["ACCIONES", "PENDIENTES"]]),
-            ("RESPUESTOS SOLICITADOS", [
-                ["RESPUESTOS", "SOLICITADOS"],
-                ["REPUESTOS", "SOLICITADOS"],
-            ]),
-            # Ojo: en este PDF la etiqueta completa es "Observaciones generales Observaciones"
-            ("OBSERVACIONES", [
-                ["OBSERVACIONES", "GENERALES", "OBSERVACIONES"],
-                ["OBSERVACIONES"],
-            ]),
-        ]
-
-        stop_targets = [
-            ("SUBTAREAS", [["SUBTAREAS"]]),
-            ("FUNCIONAMIENTO", [["FUNCIONAMIENTO"]]),
-            ("REALIZADO CON", [["REALIZADO", "CON"]]),
-        ]
-
-        out = {}
-        doc = fitz.open(ruta_pdf)
-        try:
-            for page in doc:
-                words = page.get_text("words")
-                if not words:
-                    continue
-
-                found = []
-                for key, variants in targets:
-                    bbox = None
-                    for phrase in variants:
-                        bbox = self._find_phrase_bbox(words, phrase)
-                        if bbox:
-                            found.append((key, bbox))
-                            break
-
-                if not found:
-                    continue
-
-                anchors = {}
-                for key, variants in stop_targets:
-                    for phrase in variants:
-                        bbox = self._find_phrase_bbox(words, phrase)
-                        if bbox:
-                            anchors[key] = bbox
-                            break
-
-                found.sort(key=lambda t: t[1][1])
-
-                def _is_noise_word(txt: str) -> bool:
-                    u = self._upper_norm(txt)
-                    return (
-                        "REALIZADO CON" in u or
-                        "TODOS LOS DERECHOS RESERVADOS" in u or
-                        u in {"PÁG", "PAG"} or
-                        "FRACTTAL" in u
-                    )
-
-                for i, (key, bbox) in enumerate(found):
-                    prev_bbox = found[i - 1][1] if i > 0 else None
-                    next_bbox = found[i + 1][1] if i + 1 < len(found) else None
-
-                    # Inicio de banda: luego de SUBTAREAS si es la primera etiqueta de la página;
-                    # si no, luego de la etiqueta anterior.
-                    if prev_bbox is None:
-                        start_y = anchors.get("SUBTAREAS", (0, 0, 0, 0))[3] + 1
-                    else:
-                        start_y = prev_bbox[3] + 1
-
-                    # Fin de banda: antes de la siguiente etiqueta; o antes de FUNCIONAMIENTO/footer.
-                    end_y = page.rect.height - 2
-                    if next_bbox is not None:
-                        end_y = min(end_y, next_bbox[1] - 1)
-                    if "FUNCIONAMIENTO" in anchors:
-                        end_y = min(end_y, anchors["FUNCIONAMIENTO"][1] - 1)
-                    if "REALIZADO CON" in anchors:
-                        end_y = min(end_y, anchors["REALIZADO CON"][1] - 1)
-
-                    label_bboxes = [bb for _, bb in found]
-                    vals = []
-                    for w in words:
-                        x0, y0, x1, y1, txt, *_ = w
-                        if y0 < start_y or y1 > end_y:
-                            continue
-                        if _is_noise_word(txt):
-                            continue
-
-                        inside_label = False
-                        for lbb in label_bboxes:
-                            if x0 >= lbb[0] - 1 and x1 <= lbb[2] + 1 and y0 >= lbb[1] - 1 and y1 <= lbb[3] + 1:
-                                inside_label = True
-                                break
-                        if inside_label:
-                            continue
-
-                        # En observaciones, eliminar la palabra "generales" que pertenece al rótulo largo.
-                        if key == "OBSERVACIONES" and self._upper_norm(txt) == "GENERALES":
-                            continue
-
-                        vals.append(w)
-
-                    vals = self._sort_words(vals)
-                    if not vals:
-                        continue
-
-                    lines = []
-                    current = []
-                    last_y = None
-                    for w in vals:
-                        y = w[1]
-                        t = self._norm_spaces(w[4])
-                        if not t:
-                            continue
-                        if last_y is None or abs(y - last_y) <= 2.5:
-                            current.append(t)
-                        else:
-                            lines.append(" ".join(current))
-                            current = [t]
-                        last_y = y
-                    if current:
-                        lines.append(" ".join(current))
-
-                    val = self._collapse_value(" ".join(lines))
-                    if not val:
-                        continue
-
-                    # Limpieza específica por campo
-                    if key == "DESCRIPCIÓN DE LA FALLA O SINTOMA":
-                        val = re.sub(r"\bTodos los derechos reservados\b", "", val, flags=re.IGNORECASE)
-                    elif key == "RESPUESTOS SOLICITADOS":
-                        # Este campo debe quedarse solo con el repuesto solicitado, no observaciones.
-                        m = re.search(r"^(.*?No hay\.)\b", val, flags=re.IGNORECASE)
-                        if m:
-                            val = m.group(1)
-                        else:
-                            val = re.split(r"\bFalla reportada\b|\bInicio cambio\b|\bObservaciones\b", val, maxsplit=1, flags=re.IGNORECASE)[0]
-                    elif key == "OBSERVACIONES":
-                        val = re.split(r"\bFuncionamiento\b|\bAceptado Por\b|\bValidado Por\b|\bRealizado Por\b", val, maxsplit=1, flags=re.IGNORECASE)[0]
-                        if not val and "RESPUESTOS SOLICITADOS" in out:
-                            pass
-
-                    val = self._collapse_value(val)
-                    if val:
-                        out[key] = val
-
-            return out
-        finally:
-            doc.close()
-
-    def _extract_subtareas_text_blocks(self, texto: str) -> dict:
-        """Fallback por texto plano, removiendo ruidos y colapsando saltos de línea."""
-        lines = []
-        for ln in texto.splitlines():
-            s = self._norm_spaces(ln)
-            if not s:
-                continue
-            u = self._upper_norm(s)
-            if (
-                "REALIZADO CON WWW.FRACTTAL.COM" in u or
-                "TODOS LOS DERECHOS RESERVADOS" in u or
-                re.fullmatch(r"PÁ?G\s*\d+\s*-\s*\d+", u) or
-                u.startswith("INTERNATIONAL CLINICS") or
-                u.startswith("ORDEN DE TRABAJO") or
-                u.startswith("CALIFICACIÓN") or
-                u.startswith("CALIFICACION") or
-                u.startswith("9001:2015") or
-                u == "."
-            ):
-                continue
-            lines.append(s)
-
-        flat = " ".join(lines)
-        flat = re.sub(r"\s+", " ", flat).strip()
-
-        patterns = {
-            "DESCRIPCIÓN DE LA FALLA O SINTOMA": r"Descripción de la falla o sintoma\s*(.*?)\s*Acciones realizadas",
-            "ACCIONES REALIZADAS": r"Acciones realizadas\s*(.*?)\s*Acciones pendientes",
-            "ACCIONES PENDIENTES": r"Acciones pendientes\s*(.*?)\s*Repuestos Solicitados",
-            "RESPUESTOS SOLICITADOS": r"Repuestos Solicitados\s*(.*?)\s*Observaciones generales\s*Observaciones",
-            "OBSERVACIONES": r"Observaciones generales\s*Observaciones\s*(.*?)\s*Funcionamiento\s*Equipo operativo",
-        }
-        out = {}
-        for key, pat in patterns.items():
-            m = re.search(pat, flat, flags=re.IGNORECASE | re.DOTALL)
-            if m:
-                val = self._collapse_value(m.group(1))
-                if key == "RESPUESTOS SOLICITADOS":
-                    val = re.split(r"\bFalla reportada\b|\bInicio cambio\b", val, maxsplit=1, flags=re.IGNORECASE)[0]
-                    val = self._collapse_value(val)
-                out[key] = val
-        return out
-
-
     # =============== Mapea etiquetas de tabla a tus claves estándar ===============
     def integrar_subtareas_en_datos(self, datos, subtareas_tabla):
         """
@@ -1080,18 +865,19 @@ class ExtractorPDF:
     # =============== Asegúrate que esta versión de extraer_todos_los_datos esté así ===============
     def extraer_todos_los_datos(self, texto, ruta_pdf=None):
         resultados = {}
-
+        
         # Extraer el título primero
         resultados["TÍTULO"] = self.extraer_titulo(texto)
-
+        
         # Extraer todos los campos definidos en los patrones
         for nombre_campo in self.patrones:
             resultados[nombre_campo] = self.buscar_patron(texto, nombre_campo)
-
+        
         # Calcular duración registrada
         fecha_inicio_str = resultados["FECHA Y HORA DE INICIO"]
         fecha_termino_str = resultados["FECHA Y HORA DE FINALIZACIÓN"]
         formato_fecha = "%Y-%m-%d %H:%M"
+
         try:
             fecha_inicio = datetime.strptime(fecha_inicio_str, formato_fecha)
             fecha_termino = datetime.strptime(fecha_termino_str, formato_fecha)
@@ -1099,88 +885,87 @@ class ExtractorPDF:
         except Exception:
             resultados["DURACION REGISTRADA"] = "No calculable"
 
-        # 1) Subtareas: combinar extracción por coordenadas y por texto plano
-        subt_words = {}
-        subt_text = {}
+        # 1) Intentar rellenar SUBTAREAS desde las tablas
         if ruta_pdf is not None:
-            try:
-                subt_words = self._extract_subtareas_words_band(ruta_pdf)
-            except Exception:
-                subt_words = {}
-        try:
-            subt_text = self._extract_subtareas_text_blocks(texto)
-        except Exception:
-            subt_text = {}
+            subtareas_tabla = self.extraer_subtareas_desde_tabla(ruta_pdf)
+            if subtareas_tabla:
+                resultados = self.integrar_subtareas_en_datos(resultados, subtareas_tabla)
 
-        subtareas = {}
+        # 1b) Fallback fuerte: coordenadas (para PDF escaneado / OCR)
+        if ruta_pdf is not None:
+            subt_coords = self.extraer_subtareas_por_coordenadas(ruta_pdf)
+            if subt_coords:
+                resultados = self.integrar_subtareas_en_datos(resultados, subt_coords)
+
+
+        # 1.b) Fallback robusto: SUBTAREAS por coordenadas (OCR sandwich)
         keys_sub = [
             "DESCRIPCIÓN DE LA FALLA O SINTOMA",
             "ACCIONES REALIZADAS",
             "ACCIONES PENDIENTES",
             "RESPUESTOS SOLICITADOS",
+            "REVISION DE LAS TAREAS DE BAJA FRECUENCIA",
+            "REVISION Y SEGUIMIENTO DE LAS RECOMENDACIONES",
+            "HORAS DE FILAMENTO Y BEAM",
+            "REPUESTOS A SOLICITAR",
             "OBSERVACIONES",
         ]
-        for k in keys_sub:
-            vw = self._collapse_value(subt_words.get(k, ""))
-            vt = self._collapse_value(subt_text.get(k, ""))
 
-            if k == "DESCRIPCIÓN DE LA FALLA O SINTOMA":
-                chosen = vw if (vw and "reporta" in vw.lower()) else (vt or vw)
-            elif k == "ACCIONES REALIZADAS":
-                chosen = vw if (vw and vw.lower().startswith("se ")) else (vt or vw)
-            elif k == "ACCIONES PENDIENTES":
-                # Aquí el valor puede venir contaminado con la última línea de "Acciones realizadas".
-                chosen = vt or vw
-                if vw:
-                    m = re.search(r"(Se efectuará.*)", vw, flags=re.IGNORECASE)
-                    if m:
-                        chosen = self._collapse_value(m.group(1))
-                if chosen and chosen.lower().startswith("de operación") and vt:
-                    chosen = vt
-            elif k == "RESPUESTOS SOLICITADOS":
-                chosen = vt or vw
-            elif k == "OBSERVACIONES":
-                chosen = vw if (vw and "falla reportada" in vw.lower()) else (vt or vw)
-            else:
-                chosen = vw or vt
+        def _malo(v: str) -> bool:
+            v = v or ""
+            vu = self._upper_norm(v)
+            if v in ("", "No encontrado"):
+                return True
+            # contaminación típica
+            return any(x in vu for x in [
+                "ACCIONES REALIZADAS", "ACCIONES PENDIENTES",
+                "RESPUESTOS SOLICITADOS", "REPUESTOS SOLICITADOS"
+            ])
 
-            if chosen:
-                subtareas[k] = chosen
+        need_sub = any(_malo(resultados.get(k, "")) for k in keys_sub)
 
-        if subtareas:
-            resultados = self.integrar_subtareas_en_datos(resultados, subtareas)
 
-        # 3) Fallback adicional: descripción de falla y observaciones desde texto plano
+        if ruta_pdf is not None and need_sub:
+            sub_coord = self.extraer_subtareas_por_coordenadas(ruta_pdf)
+            if sub_coord:
+                # Solo rellenar lo que falte o lo que venga contaminado
+                for k, v in sub_coord.items():
+                    cur = resultados.get(k, "")
+                    cur_u = self._upper_norm(cur)
+                    # si falta o si trae “ACCIONES…” dentro (contaminación), reemplazar
+                    contaminado = any(x in cur_u for x in [
+                        "ACCIONES REALIZADAS", "ACCIONES PENDIENTES",
+                        "RESPUESTOS SOLICITADOS", "REPUESTOS SOLICITADOS"
+                    ])
+                    if (not cur) or cur == "No encontrado" or contaminado:
+                        resultados[k] = v
+
+        # 2) Fallback: DESCRIPCIÓN DE LA FALLA O SINTOMA desde texto plano
         valor_falla = resultados.get("DESCRIPCIÓN DE LA FALLA O SINTOMA", "")
         if not valor_falla or valor_falla == "No encontrado":
             desc_falla = self.extraer_descripcion_falla_desde_texto(texto)
             if desc_falla:
-                resultados["DESCRIPCIÓN DE LA FALLA O SINTOMA"] = self._collapse_value(desc_falla)
+                resultados["DESCRIPCIÓN DE LA FALLA O SINTOMA"] = desc_falla
 
+        # 3) Mejora para NOTAS: usar extracción multilinea controlada
+        notas_texto = self.extraer_notas_desde_texto(texto)
+        if notas_texto:
+            resultados["NOTAS"] = notas_texto
+
+        # 4) Fallback: OBSERVACIONES desde texto plano (si tabla o regex no la llenaron)
         valor_obs = resultados.get("OBSERVACIONES", "")
         if not valor_obs or valor_obs == "No encontrado":
             obs = self.extraer_observaciones_desde_texto(texto)
             if obs:
-                resultados["OBSERVACIONES"] = self._collapse_value(obs)
-
-        # 4) Mejora para NOTAS: usar extracción multilinea controlada
-        notas_texto = self.extraer_notas_desde_texto(texto)
-        if notas_texto:
-            resultados["NOTAS"] = self._collapse_value(notas_texto)
+                resultados["OBSERVACIONES"] = obs
 
         # 5) Normalizar DESCRIPCIÓN: si contiene UNIQUE, dejar solo 'UNIQUE'
         desc = resultados.get("DESCRIPCIÓN", "")
         if desc and desc != "No encontrado":
             if "UNIQUE" in desc.upper():
                 resultados["DESCRIPCIÓN"] = "UNIQUE"
-
-        # 6) Colapsar saltos de línea en los valores que salen al TXT/Excel
-        for k, v in list(resultados.items()):
-            if isinstance(v, str):
-                resultados[k] = self._collapse_value(v)
-
         return resultados
-
+    
     def agregar_patron(self, nombre_campo, patron_regex):
         self.patrones[nombre_campo] = patron_regex
 
@@ -1211,7 +996,7 @@ class ExtractorPDF:
             filas_excel.append({
                 "Categoría": "TÍTULO",
                 "Campo": "TÍTULO",
-                "Valor": self._collapse_value(str(datos["TÍTULO"]))
+                "Valor": str(datos["TÍTULO"])
             })
 
         # Agrupar por categorías para mejor lectura
@@ -1247,7 +1032,7 @@ class ExtractorPDF:
 
             for campo in campos:
                 if campo in datos and datos[campo] != "No encontrado":
-                    valor = self._collapse_value(datos[campo])
+                    valor = datos[campo]
                     campo_line = f"  • {campo}: {valor}"
                     print(campo_line)
                     texto_salida += campo_line + "\n"
@@ -1255,7 +1040,7 @@ class ExtractorPDF:
                     filas_excel.append({
                         "Categoría": categoria,
                         "Campo": campo,
-                        "Valor": self._collapse_value(str(valor))
+                        "Valor": str(valor)
                     })
 
         # ========= NOMBRE BASE: OTxxxx_MPmm / OTxxxx_MCmm =========

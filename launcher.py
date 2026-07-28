@@ -9,6 +9,7 @@ import shutil
 import re
 import json
 import tkinter.font as tkfont
+from auth import is_admin
 
 class AutoScrollbar(ttk.Scrollbar):
     """Scrollbar que se oculta automáticamente si no es necesaria."""
@@ -313,7 +314,7 @@ def load_halcyon_map() -> dict[str, str]:
             for k, v in (data or {}).items():
                 kk = str(k).upper().replace(" ", "").replace("-", "")
                 vv = str(v).upper()
-                if vv in ("HALCYON_1", "HALCYON_2"):
+                if re.fullmatch(r"HALCYON_\d+", vv):
                     out[kk] = vv
             return out
     except Exception:
@@ -326,7 +327,7 @@ def save_halcyon_map(m: dict[str, str]) -> None:
     except Exception:
         pass
 
-# 👇 Rellena esto con los seriales reales de tus 2 equipos:
+# 👇 Mapea seriales HALxxxx a HALCYON_n (ej: HAL1305 -> HALCYON_1)
 HALCYON_SERIAL_MAP = load_halcyon_map()
 
 PROGRAMS = [
@@ -455,8 +456,10 @@ OT_BUTTONS = [
         "key": "CONTROL DE CALIDAD",
         "label": "CONTROL DE CALIDAD",
         "desc": (
-            "Descripción de control de calidad.\n\n"
-            "• (Edita esta descripción a tu gusto)\n"
+            "OTs ECM de equipos de Control de Calidad y posicionamiento.\n\n"
+            "• Guarda/ordena PDFs en: Escritorio/OTs/ECM/CONTROL_DE_CALIDAD\n"
+            "• Usa P5 para extraer PDF + TXT + Excel igual que las OTs ECM/Halcyon.\n"
+            "• Pensado para casos como PTWECM / Control de Calidad y Accesorios.\n"
         ),
     },
 ]
@@ -471,6 +474,21 @@ def _find_halcyon_serial(blob: str) -> str | None:
         return None
     return f"HAL{m.group(1)}".upper()
 
+
+
+def _looks_like_control_calidad(blob: str) -> bool:
+    """
+    Detecta OTs ECM de Control de Calidad / equipos de posicionamiento.
+    """
+    hits = [
+        "equipos de control de calidad y posicionamiento",
+        "control de calidad y accesorios",
+        "control de calidad",
+        "posicionamiento",
+        "ptwecm",
+        "pmi equipo de control",
+    ]
+    return any(h in blob for h in hits)
 def run_script(path: Path, args: list[str] | None = None):
     if not path.exists():
         messagebox.showerror("No encontrado", f"No existe:\n{path}")
@@ -511,6 +529,92 @@ def _safe_copy_name(dst_dir: Path, filename: str) -> Path:
         i += 1
     return cand
 
+def _extract_ot_number_from_path_or_text(path: Path, text: str = "") -> str:
+    """
+    Intenta obtener el número OT desde el nombre del archivo o desde el texto extraído.
+    """
+    name = path.name if path else ""
+    m = re.search(r"OT\s*([0-9]{3,10})", name, flags=re.IGNORECASE)
+    if m:
+        return m.group(1)
+    m = re.search(r"Informaci[oó]n\s+de\s+la\s+Tarea\s+([0-9]{3,10})", text, flags=re.IGNORECASE)
+    if m:
+        return m.group(1)
+    m = re.search(r"([0-9]{4,10})", name)
+    if m:
+        return m.group(1)
+    return ""
+
+
+def _dest_dir_for_kind(kind: str, desktop: Path | None = None) -> Path:
+    desktop = desktop or _desktop_dir()
+    base = desktop / "OTs"
+
+    if kind == "UNIQUE":
+        return base / "ICLINIC" / "UNIQUE"
+    if kind.startswith("HALCYON_"):
+        return base / "ECM" / kind
+    if kind == "CONTROL DE CALIDAD":
+        return base / "ECM" / "CONTROL_DE_CALIDAD"
+    if kind == "SIEMENS":
+        return base / "SIEMENS"
+    if kind == "HALCYON":
+        return base / "ECM" / "REVISAR_HALCYON"
+    if not kind:
+        return base / "OTs_OTROS" / "SIN_CLASIFICAR"
+    return base / "OTs_OTROS" / kind
+
+
+def _kind_label_for_batch(kind: str | None) -> str:
+    if not kind:
+        return "SIN CLASIFICAR"
+    if kind == "HALCYON":
+        return "HALCYON (REVISAR)"
+    return kind
+
+
+def _destination_pdf_for_kind(src: Path, kind: str) -> Path:
+    return _dest_dir_for_kind(kind) / src.name
+
+
+def _existing_output_conflicts(src: Path, kind: str, ot: str | None = None) -> list[Path]:
+    conflicts: list[Path] = []
+
+    dst_pdf = _destination_pdf_for_kind(src, kind)
+    if dst_pdf.exists():
+        conflicts.append(dst_pdf)
+
+    # TXT resumen: aplica sobre todo a P1/P5.
+    if kind == "UNIQUE" or kind.startswith("HALCYON_") or kind == "CONTROL DE CALIDAD":
+        resumen_dir = _dest_dir_for_kind(kind) / "Resumen"
+        if resumen_dir.exists() and resumen_dir.is_dir():
+            seen = {str(x.resolve()) for x in conflicts}
+            patterns: list[str] = []
+            ot = (ot or "").strip()
+            if ot and ot != "—":
+                patterns.extend([f"OT{ot}_*.txt", f"*{ot}*.txt"])
+            patterns.append(f"{src.stem}.txt")
+
+            for pat in patterns:
+                for cand in sorted(resumen_dir.glob(pat)):
+                    try:
+                        key = str(cand.resolve())
+                    except Exception:
+                        key = str(cand)
+                    if cand.exists() and key not in seen:
+                        conflicts.append(cand)
+                        seen.add(key)
+
+    return conflicts
+
+def _can_auto_process_kind(kind: str | None) -> bool:
+    if not kind:
+        return False
+    if kind == "HALCYON":
+        return False
+    return True
+
+
 def classify_ot_pdf(path: Path) -> str | None:
     name = (path.name or "").lower()
     text = extract_pdf_text(path).lower()
@@ -532,6 +636,10 @@ def classify_ot_pdf(path: Path) -> str | None:
         return "UNIQUE"
     if re.search(r"\bu[nm][i1l]que\b", blob, flags=re.IGNORECASE):
         return "UNIQUE"
+
+    # ---------------- ECM: Control de Calidad ----------------
+    if _looks_like_control_calidad(blob) and "halcyon" not in blob:
+        return "CONTROL DE CALIDAD"
 
     # ---------------- HALCYON ----------------
     halcyon_hits = [
@@ -555,7 +663,7 @@ def classify_ot_pdf(path: Path) -> str | None:
     if any(k in blob for k in halcyon_hits) or "halcyon" in blob:
         serial = _find_halcyon_serial(blob)
         if serial and serial in HALCYON_SERIAL_MAP:
-            return HALCYON_SERIAL_MAP[serial]  # HALCYON_1 o HALCYON_2
+            return HALCYON_SERIAL_MAP[serial]  # HALCYON_1, HALCYON_2, HALCYON_3, etc.
         return "HALCYON"  # si no se puede distinguir cuál
 
     # ---------------- SIEMENS ----------------
@@ -637,6 +745,161 @@ def ocr_pdf_first_page(path: Path, max_chars: int = 6000) -> str:
         return text[:max_chars]
     except Exception:
         return ""
+
+class LoginWindow(tk.Tk):
+    """
+    Ventana de login que se muestra antes del launcher principal.
+    Solo permite acceso a usuarios con rol de administrador.
+    """
+    def __init__(self):
+        super().__init__()
+        self.title("Acceso al Sistema")
+        self.configure(background="#eaf2ff")
+        
+        # Centrar ventana
+        self.geometry("480x450")      # más alto para que quepa el botón + texto
+        self.minsize(480, 440)        # evita que el SO lo deje más chico
+        self.resizable(True, True)  # si quieres permitir resize, pon True, True
+
+        
+        # Estilo clínico consistente con el launcher
+        style = ttk.Style(self)
+        try:
+            if "clam" in style.theme_names():
+                style.theme_use("clam")
+        except Exception:
+            pass
+        
+        self.C_BG = "#eaf2ff"
+        self.C_CARD = "#dbeafe"
+        self.C_TOPBAR = "#013999"
+        self.C_ACTION_BLUE = "#1d4ed8"
+        self.C_ACTION_BLUE_H = "#2563eb"
+        self.C_TEXT = "#0f172a"
+        self.C_MUTED = "#334155"
+        self.C_BORDER = "#c9d9f2"
+        
+        self.FONT_TITLE = ("TkDefaultFont", 24, "bold")
+        self.FONT_BODY = ("TkDefaultFont", 10)
+        self.FONT_BTN = ("TkDefaultFont", 10, "bold")
+        
+        self._build_ui()
+        
+        # Enter hace login (desde cualquier campo)
+        self.entry_user.bind("<Return>", self._on_enter_login)
+        self.entry_pass.bind("<Return>", self._on_enter_login)
+        self.bind("<Return>", self._on_enter_login)  # fallback por si el foco queda fuera
+
+        
+        # Resultado del login
+        self.login_successful = False
+        
+    def _build_ui(self):
+        # Contenedor principal
+        main = ttk.Frame(self, padding=30, style="App.TFrame")
+        main.pack(fill="both", expand=True)
+        
+        style = ttk.Style(self)
+        style.configure("App.TFrame", background=self.C_BG)
+        style.configure("Card.TFrame", background=self.C_CARD)
+        style.configure("Title.TLabel", background=self.C_BG, foreground=self.C_TEXT, font=self.FONT_TITLE)
+        style.configure("Body.TLabel", background=self.C_CARD, foreground=self.C_MUTED, font=self.FONT_BODY)
+        style.configure("CardTitle.TLabel", background=self.C_CARD, foreground=self.C_TEXT, font=("TkDefaultFont", 11, "bold"))
+        
+        # Título
+        ttk.Label(
+            main,
+            text="🔐 Acceso al Sistema",
+            style="Title.TLabel"
+        ).pack(pady=(0, 20))
+        
+        # Tarjeta de login (redondeada)
+        card = RoundedCard(
+            main,
+            bg_card=self.C_CARD,
+            bg_parent=self.C_BG,
+            radius=20,
+            padding=24,
+            shadow=True,
+            shadow_offset=2,
+            shadow_color="#1e293b",
+            border_color=self.C_BORDER,
+            border_width=2,
+        )
+        card.pack(fill="x", pady=(0, 20))
+        
+        inner = card.inner
+        inner.configure(style="Card.TFrame")
+        
+        ttk.Label(
+            inner,
+            text="Ingresa tus credenciales",
+            style="CardTitle.TLabel"
+        ).pack(anchor="w", pady=(0, 16))
+        
+        # Usuario
+        ttk.Label(inner, text="Usuario:", style="Body.TLabel").pack(anchor="w", pady=(0, 4))
+        self.entry_user = ttk.Entry(inner, font=self.FONT_BODY, width=28)
+        self.entry_user.pack(fill="x", pady=(0, 12))
+        self.entry_user.focus()
+        
+        # Contraseña
+        ttk.Label(inner, text="Contraseña:", style="Body.TLabel").pack(anchor="w", pady=(0, 4))
+        self.entry_pass = ttk.Entry(inner, font=self.FONT_BODY, width=28, show="•")
+        self.entry_pass.pack(fill="x", pady=(0, 16))
+        
+        # Botón de login
+        ClinicButton(
+            inner,
+            text="Iniciar sesión",
+            parent_bg=self.C_CARD,
+            bg=self.C_ACTION_BLUE,
+            hover_bg=self.C_ACTION_BLUE_H,
+            command=self._do_login,
+            radius=14,
+            height=42,
+            font=self.FONT_BTN,
+            width=200,
+            shadow=True,
+            shadow_offset=1,
+            shadow_color="#1e293b",
+        ).pack(pady=(4, 0))
+        
+        # Mensaje de estado
+        self.status_label = ttk.Label(
+            main,
+            text="Solo usuarios con rol de administrador pueden acceder.",
+            style="Body.TLabel",
+            foreground=self.C_MUTED
+        )
+        self.status_label.pack(pady=(8, 0))
+        
+    def _on_enter_login(self, event=None):
+        self._do_login()
+        return "break"  # evita propagación del evento
+
+    def _do_login(self):
+        username = self.entry_user.get().strip()
+        password = self.entry_pass.get()
+        
+        if not username or not password:
+            self.status_label.configure(
+                text="⚠️ Por favor completa todos los campos.",
+                foreground="#d97706"
+            )
+            return
+        
+        # Verificar si es administrador
+        if is_admin(username, password):
+            self.login_successful = True
+            self.destroy()
+        else:
+            self.status_label.configure(
+                text="❌ Credenciales incorrectas o sin permisos de administrador.",
+                foreground="#dc2626"
+            )
+            self.entry_pass.delete(0, tk.END)
+            self.entry_user.focus()
 
 class Launcher(tk.Tk):
     def __init__(self):
@@ -913,15 +1176,15 @@ class Launcher(tk.Tk):
         # --- Acciones clínicas (botones redondeados) ---
         ClinicButton(
             sidebar,
-            text="🗃️ Importar OT (PDF) y guardar en Escritorio/OTs",
+            text="🗃️ Importar OT(s) PDF",
             parent_bg=self.C_CARD,
             bg=self.C_ACTION_BLUE,
             hover_bg=self.C_ACTION_BLUE_H,
-            command=self.import_ot_menu,   # Menú para elegir flujo de OT
+            command=self.import_ot_pdfs_batch,
             radius=16,
             height=44,
             font=self.FONT_BTN_SM,
-            width=350,
+            width=320,
             shadow=True,
             shadow_offset=1,
             shadow_color="#1e293b",
@@ -1171,49 +1434,525 @@ class Launcher(tk.Tk):
         ttk.Label(
             inner,
             text=(
-                "Flujo guiado recomendado:\n"
-                "• Abre directamente la carpeta Descargas para elegir el PDF.\n"
-                "• Luego eliges el tipo de OT y se guarda en la carpeta correspondiente del Escritorio.\n"
-                "• Para OTs UNIQUE se ejecuta internamente el Programa 1 (P1) para extraer y resumir los datos."
+                "Este flujo te guía para seleccionar el PDF desde Descargas,\n"
+                "e importarlo a una carpeta estructurada en Escritorio/OTs."
             ),
             style="CardWhiteMuted.TLabel",
             wraplength=720,
             justify="left",
         ).grid(row=2, column=0, sticky="w", pady=(0, 14))
 
-        # Botón: abrir P1 directamente
-        def _open_p1():
-            win.destroy()
+    def _process_ot_by_kind(self, src: Path, kind: str, batch_mode: bool = False, overwrite_existing: bool = False) -> tuple[bool, str]:
+        if not src.exists():
+            return (False, f"No existe: {src.name}")
+
+        dst_dir = _dest_dir_for_kind(kind)
+        dst_dir.mkdir(parents=True, exist_ok=True)
+
+        if kind == "UNIQUE":
             p1_script = HERE / "P1_ExtraerDatosPDF.py"
-            run_script(p1_script)
+            try:
+                args = [sys.executable, str(p1_script), str(src), str(dst_dir)]
+                if batch_mode:
+                    args.append("--silent")
+                subprocess.run(args, cwd=str(HERE), check=False)
+                return (True, f"Procesado UNIQUE → {dst_dir}")
+            except Exception as e:
+                return (False, f"Error UNIQUE: {e}")
+
+        if kind.startswith("HALCYON_") or kind == "CONTROL DE CALIDAD":
+            p5_script = (HERE / "P5_Extractor_Halcyon_corregido_v9_silent.py") if (HERE / "P5_Extractor_Halcyon_corregido_v9_silent.py").exists() else (HERE / "P5_Extractor_Halcyon.py")
+            try:
+                args = [sys.executable, str(p5_script), str(src), str(dst_dir)]
+                if batch_mode:
+                    args.append("--silent")
+                subprocess.run(args, cwd=str(HERE), check=False)
+                return (True, f"Procesado {kind} → {dst_dir}")
+            except Exception as e:
+                return (False, f"Error {kind}: {e}")
+
+        dst = dst_dir / src.name
+        try:
+            if dst.exists() and not overwrite_existing:
+                return (False, f"Omitido: ya existe {dst.name}")
+            shutil.copy2(src, dst)
+            return (True, f"Copiado → {dst}")
+        except Exception as e:
+            return (False, f"Error copiando {src.name}: {e}")
+
+    def import_ot_pdfs_batch(self):
+        start_dir = str(_downloads_dir())
+        paths = filedialog.askopenfilenames(
+            title="Selecciona una o varias OTs en PDF",
+            initialdir=start_dir,
+            filetypes=[("PDF", "*.pdf"), ("Todos", "*.*")]
+        )
+        if not paths:
+            self.status_var.set("Lote cancelado.")
+            return
+
+        rows = []
+        for p in paths:
+            src = Path(p)
+            try:
+                txt = extract_pdf_text(src)
+            except Exception:
+                txt = ""
+            try:
+                kind = classify_ot_pdf(src)
+            except Exception:
+                kind = None
+            ot = _extract_ot_number_from_path_or_text(src, txt)
+            shown_kind = _kind_label_for_batch(kind)
+            destino = _dest_dir_for_kind(kind or "").relative_to(_desktop_dir())
+            rows.append({
+                "src": src,
+                "ot": ot or "—",
+                "kind": kind,
+                "shown_kind": shown_kind,
+                "dest": str(destino).replace(chr(92), "/"),
+                "can_process": _can_auto_process_kind(kind),
+            })
+
+        self._open_batch_preview(rows)
+
+    def _open_batch_preview(self, rows: list[dict]):
+        win = tk.Toplevel(self)
+        win.title("Vista previa lote OTs")
+        win.configure(background=self.C_BG)
+        win.geometry("1220x720")
+        win.minsize(1100, 620)
+        win.columnconfigure(0, weight=1)
+        win.rowconfigure(1, weight=1)
+
+        header = ttk.Frame(win, padding=12, style="App.TFrame")
+        header.grid(row=0, column=0, sticky="ew")
+        ttk.Label(header, text="🗂️ Vista previa lote de OTs", style="AppTitle.TLabel").pack(anchor="w")
+        ttk.Label(
+            header,
+            text=(
+                "Revisa la clasificación antes de procesar. "
+                "Puedes cambiar manualmente el tipo/destino por fila. "
+                "Si eliges solo un PDF, este mismo flujo también sirve para una sola OT."
+            ),
+            style="AppMuted.TLabel",
+            wraplength=1180,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 0))
+
+        body = ttk.Frame(win, padding=(12, 0, 12, 12), style="App.TFrame")
+        body.grid(row=1, column=0, sticky="nsew")
+        body.columnconfigure(0, weight=3)
+        body.columnconfigure(1, weight=2)
+        body.rowconfigure(0, weight=1)
+
+        table_frame = ttk.Frame(body, style="App.TFrame")
+        table_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        table_frame.columnconfigure(0, weight=1)
+        table_frame.rowconfigure(0, weight=1)
+
+        yscroll = AutoScrollbar(table_frame, orient="vertical")
+        xscroll = AutoScrollbar(table_frame, orient="horizontal")
+
+        tree = ttk.Treeview(
+            table_frame,
+            columns=("sel", "archivo", "ot", "tipo", "destino", "estado"),
+            show="headings",
+            selectmode="extended",
+            yscrollcommand=yscroll.set,
+            xscrollcommand=xscroll.set,
+        )
+        yscroll.config(command=tree.yview)
+        xscroll.config(command=tree.xview)
+        tree.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
+
+        for col, title, width in [
+            ("sel", "✓", 44),
+            ("archivo", "Archivo", 260),
+            ("ot", "OT", 90),
+            ("tipo", "Tipo", 190),
+            ("destino", "Destino", 360),
+            ("estado", "Estado", 170),
+        ]:
+            tree.heading(col, text=title)
+            tree.column(col, width=width, minwidth=width, anchor=("center" if col == "sel" else "w"), stretch=(col in ("archivo", "destino")))
+
+        edit_card = RoundedCard(
+            body,
+            bg_card="#ffffff",
+            bg_parent=self.C_BG,
+            radius=18,
+            padding=12,
+            shadow=False,
+            border_color=self.C_BORDER,
+            border_width=1,
+        )
+        edit_card.grid(row=0, column=1, sticky="nsew")
+        edit = edit_card.inner
+        edit.configure(style="CardWhite.TFrame")
+        edit.columnconfigure(0, weight=1)
+
+        ttk.Label(edit, text="Edición manual", style="CardWhiteTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            edit,
+            text="Selecciona una fila y, si quieres, cambia el tipo antes de procesar.",
+            style="CardWhiteMuted.TLabel",
+            wraplength=360,
+            justify="left",
+        ).grid(row=1, column=0, sticky="w", pady=(4, 12))
+
+        selected_file_var = tk.StringVar(value="Archivo: —")
+        selected_ot_var = tk.StringVar(value="OT: —")
+        selected_detected_var = tk.StringVar(value="Detectado: —")
+        ttk.Label(edit, textvariable=selected_file_var, style="CardWhiteMuted.TLabel").grid(row=2, column=0, sticky="w")
+        ttk.Label(edit, textvariable=selected_ot_var, style="CardWhiteMuted.TLabel").grid(row=3, column=0, sticky="w", pady=(2, 0))
+        ttk.Label(edit, textvariable=selected_detected_var, style="CardWhiteMuted.TLabel").grid(row=4, column=0, sticky="w", pady=(2, 10))
+
+        ttk.Label(edit, text="Tipo / destino", style="CardWhiteTitle.TLabel").grid(row=5, column=0, sticky="w", pady=(0, 6))
+
+        batch_options = [item["key"] for item in OT_BUTTONS]
+        batch_options += ["HALCYON", "SIN CLASIFICAR"]
+        batch_options = list(dict.fromkeys(batch_options))
+        batch_kind_var = tk.StringVar(value="")
+        combo = ttk.Combobox(edit, textvariable=batch_kind_var, values=batch_options, state="readonly", style="OT.TCombobox")
+        combo.grid(row=6, column=0, sticky="ew")
+
+        destino_var = tk.StringVar(value="Destino: —")
+        estado_var = tk.StringVar(value="Estado: —")
+        ttk.Label(edit, textvariable=destino_var, style="CardWhiteMuted.TLabel", wraplength=360, justify="left").grid(row=7, column=0, sticky="w", pady=(10, 0))
+        ttk.Label(edit, textvariable=estado_var, style="CardWhiteMuted.TLabel", wraplength=360, justify="left").grid(row=8, column=0, sticky="w", pady=(4, 12))
+
+        help_var = tk.StringVar(value="Consejo: HALCYON genérico y SIN CLASIFICAR puedes corregirlos aquí antes de procesar.")
+        ttk.Label(edit, textvariable=help_var, style="CardWhiteMuted.TLabel", wraplength=360, justify="left").grid(row=9, column=0, sticky="w", pady=(0, 12))
+
+        iid_to_row = {}
+        allowed_manual = set(batch_options)
+
+        def _is_checked(iid: str) -> bool:
+            return bool(iid_to_row[iid].get("checked"))
+
+        def _set_checked(iid: str, checked: bool):
+            iid_to_row[iid]["checked"] = bool(checked)
+            vals = list(tree.item(iid, "values"))
+            if vals:
+                vals[0] = "☑" if checked else "☐"
+                tree.item(iid, values=tuple(vals))
+
+        def _sync_tree_selection_from_checks():
+            tree.selection_remove(*tree.selection())
+            for _iid in iid_to_row:
+                if _is_checked(_iid):
+                    tree.selection_add(_iid)
+
+        def _normalize_kind_for_manual(kind: str | None) -> str:
+            if not kind:
+                return "SIN CLASIFICAR"
+            return kind
+
+        def _refresh_row(iid: str):
+            row = iid_to_row[iid]
+            kind = row.get("manual_kind") or row.get("kind")
+            if kind == "SIN CLASIFICAR":
+                shown_kind = "SIN CLASIFICAR"
+                dest = _dest_dir_for_kind("")
+                can_process = False
+            else:
+                shown_kind = _kind_label_for_batch(kind)
+                dest = _dest_dir_for_kind(kind)
+                can_process = _can_auto_process_kind(kind)
+            row["shown_kind"] = shown_kind
+            row["dest"] = str(dest.relative_to(_desktop_dir())).replace(chr(92), "/")
+            row["can_process"] = can_process
+            row["manual_kind"] = kind
+            estado = "Listo para procesar" if can_process else "Revisión manual"
+            tree.item(iid, values=("☑" if row.get("checked") else "☐", row["src"].name, row["ot"], shown_kind, row["dest"], estado))
+
+        for row in rows:
+            row["manual_kind"] = _normalize_kind_for_manual(row.get("kind"))
+            row["checked"] = bool(row.get("can_process"))
+            iid = tree.insert("", "end", values=("☑" if row["checked"] else "☐", row["src"].name, row["ot"], row["shown_kind"], row["dest"], "Listo para procesar" if row["can_process"] else "Revisión manual"))
+            iid_to_row[iid] = row
+        _sync_tree_selection_from_checks()
+
+        def _update_editor_from_selection(event=None):
+            selected = tree.selection()
+            if not selected:
+                selected_file_var.set("Archivo: —")
+                selected_ot_var.set("OT: —")
+                selected_detected_var.set("Detectado: —")
+                batch_kind_var.set("")
+                destino_var.set("Destino: —")
+                estado_var.set("Estado: —")
+                return
+            iid = selected[0]
+            row = iid_to_row[iid]
+            selected_file_var.set(f"Archivo: {row['src'].name}")
+            selected_ot_var.set(f"OT: {row['ot']}")
+            detected = row.get('kind') or 'SIN CLASIFICAR'
+            selected_detected_var.set(f"Detectado: {detected}")
+            batch_kind_var.set(row.get("manual_kind") or _normalize_kind_for_manual(row.get("kind")))
+            destino_var.set(f"Destino: {row['dest']}")
+            estado_var.set("Estado: Listo para procesar" if row["can_process"] else "Estado: Revisión manual")
+
+        tree.bind("<<TreeviewSelect>>", _update_editor_from_selection)
+
+        def _toggle_checked_from_event(event=None):
+            iid = tree.identify_row(event.y)
+            col = tree.identify_column(event.x)
+            if not iid or col != "#1":
+                return
+            _set_checked(iid, not _is_checked(iid))
+            _sync_tree_selection_from_checks()
+            _update_editor_from_selection()
+            checked_count = sum(1 for _iid in iid_to_row if _is_checked(_iid))
+            status_var.set(f"Marcadas {checked_count} fila(s) para procesar.")
+            return "break"
+
+        tree.bind("<Button-1>", _toggle_checked_from_event, add=False)
+
+        def _apply_manual_kind():
+            selected = tree.selection()
+            if not selected:
+                messagebox.showwarning("Nada seleccionado", "Selecciona una o varias filas para aplicar el cambio.")
+                return
+            new_kind = (batch_kind_var.get() or "").strip()
+            if new_kind not in allowed_manual:
+                messagebox.showwarning("Tipo inválido", "Selecciona un tipo válido.")
+                return
+            for iid in selected:
+                iid_to_row[iid]["manual_kind"] = new_kind
+                _refresh_row(iid)
+                if iid_to_row[iid]["can_process"] and not _is_checked(iid):
+                    _set_checked(iid, True)
+            _update_editor_from_selection()
+            status_var.set(f"Actualizado manualmente el tipo de {len(selected)} fila(s).")
+
+        footer = ttk.Frame(body, style="App.TFrame")
+        footer.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        footer.columnconfigure(1, weight=1)
+
+        status_var = tk.StringVar(value=f"{len(rows)} archivo(s) analizado(s).")
+        ttk.Label(footer, textvariable=status_var, style="AppMuted.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 10))
+
+        def _select_auto():
+            for iid, row in iid_to_row.items():
+                _set_checked(iid, bool(row["can_process"]))
+            _sync_tree_selection_from_checks()
+            _update_editor_from_selection()
+            status_var.set("Marcadas todas las OTs procesables automáticamente.")
+
+        def _check_all():
+            for iid in iid_to_row:
+                _set_checked(iid, True)
+            _sync_tree_selection_from_checks()
+            _update_editor_from_selection()
+            status_var.set("Marcadas todas las filas.")
+
+        def _uncheck_all():
+            for iid in iid_to_row:
+                _set_checked(iid, False)
+            _sync_tree_selection_from_checks()
+            _update_editor_from_selection()
+            status_var.set("Desmarcadas todas las filas.")
+
+        def _process_selected():
+            selected = [iid for iid in iid_to_row if _is_checked(iid)]
+            if not selected:
+                messagebox.showwarning("Nada seleccionado", "Marca una o varias filas para procesar.")
+                return
+
+            ok_count = 0
+            fail_count = 0
+            skipped = 0
+            detalles = []
+            overwrite_all = False
+            skip_all_existing = False
+            cancelled = False
+
+            for iid in selected:
+                row = iid_to_row[iid]
+                kind = row.get("manual_kind") or row.get("kind")
+                if kind == "SIN CLASIFICAR" or not row["can_process"]:
+                    skipped += 1
+                    detalles.append(f"• {row['src'].name}: requiere revisión manual ({row['shown_kind']})")
+                    continue
+
+                conflicts = _existing_output_conflicts(row["src"], kind, row.get("ot"))
+                overwrite_existing = False
+
+                if conflicts:
+                    if skip_all_existing:
+                        skipped += 1
+                        detalles.append(f"• {row['src'].name}: omitido (ya existen PDF/TXT en destino)")
+                        continue
+
+                    if overwrite_all:
+                        overwrite_existing = True
+                    else:
+                        lines = [str(x) for x in conflicts[:8]]
+                        extra = "" if len(conflicts) <= 8 else f"\n... y {len(conflicts)-8} salida(s) más."
+                        resp = messagebox.askyesnocancel(
+                            "Salida ya existe",
+                            "Ya existen estas salidas para esta OT:\n\n"
+                            + "\n".join(lines)
+                            + extra
+                            + "\n\nSí = sobrescribir esta OT\n"
+                              "No = omitir esta OT\n"
+                              "Cancelar = cancelar todo el lote"
+                        )
+                        if resp is None:
+                            cancelled = True
+                            detalles.append("• Lote cancelado por el usuario.")
+                            break
+                        if resp:
+                            overwrite_existing = True
+                            if messagebox.askyesno(
+                                "Sobrescribir siguientes",
+                                "¿Quieres sobrescribir automáticamente las próximas OTs que ya tengan PDF/TXT sin volver a preguntar?"
+                            ):
+                                overwrite_all = True
+                        else:
+                            skipped += 1
+                            detalles.append(f"• {row['src'].name}: omitido (ya existen PDF/TXT en destino)")
+                            if messagebox.askyesno(
+                                "Omitir siguientes",
+                                "¿Quieres omitir automáticamente las próximas OTs que ya tengan PDF/TXT sin volver a preguntar?"
+                            ):
+                                skip_all_existing = True
+                            continue
+
+                ok, msg = self._process_ot_by_kind(
+                    row["src"],
+                    kind,
+                    batch_mode=True,
+                    overwrite_existing=overwrite_existing,
+                )
+                if ok:
+                    ok_count += 1
+                else:
+                    fail_count += 1
+                detalles.append(f"• {row['src'].name}: {msg}")
+
+            status_var.set(f"Procesadas: {ok_count} | Con error: {fail_count} | Omitidas: {skipped}")
+            resumen = "\n".join(detalles[:20])
+            if len(detalles) > 20:
+                resumen += f"\n... y {len(detalles)-20} más."
+            if cancelled:
+                resumen = (resumen + "\n\nEl lote fue cancelado antes de terminar.").strip()
+            messagebox.showinfo("Resultado lote", resumen or "Sin resultados.")
+            self.status_var.set(status_var.get())
+
+        btns = ttk.Frame(footer, style="App.TFrame")
+        btns.grid(row=0, column=2, sticky="e")
+
+        action_row = ttk.Frame(edit, style="CardWhite.TFrame")
+        action_row.grid(row=10, column=0, sticky="ew", pady=(0, 10))
+        action_row.columnconfigure(0, weight=1)
+        action_row.columnconfigure(1, weight=1)
 
         ClinicButton(
-            inner,
-            text="🧾 Abrir Programa 1 (P1) – Extraer datos desde PDF",
+            action_row,
+            text="Marcar todas",
             parent_bg="#ffffff",
-            bg=self.C_ACTION_GREEN,
-            hover_bg=self.C_ACTION_GREEN_H,
-            command=_open_p1,
-            radius=16,
-            height=44,
+            bg=self.C_ACTION_BLUE,
+            hover_bg=self.C_ACTION_BLUE_H,
+            command=_check_all,
+            radius=14,
+            height=40,
             font=self.FONT_BTN_SM,
-            width=380,
+            width=170,
             shadow=True,
             shadow_offset=1,
             shadow_color="#1e293b",
-        ).grid(row=3, column=0, sticky="w", pady=(4, 4))
+        ).grid(row=0, column=0, sticky="w", padx=(0, 8))
 
-        ttk.Label(
-            inner,
-            text=(
-                "Modo avanzado:\n"
-                "• Abre todo el Programa 1 (P1) en una ventana aparte.\n"
-                "• Ideal cuando quieres trabajar directamente con sus opciones de selección y exportación."
-            ),
-            style="CardWhiteMuted.TLabel",
-            wraplength=720,
-            justify="left",
-        ).grid(row=4, column=0, sticky="w", pady=(0, 4))
+        ClinicButton(
+            action_row,
+            text="Desmarcar todas",
+            parent_bg="#ffffff",
+            bg="#475569",
+            hover_bg="#64748b",
+            command=_uncheck_all,
+            radius=14,
+            height=40,
+            font=self.FONT_BTN_SM,
+            width=170,
+            shadow=True,
+            shadow_offset=1,
+            shadow_color="#1e293b",
+        ).grid(row=0, column=1, sticky="e")
+
+        ClinicButton(
+            edit,
+            text="Aplicar tipo a seleccionadas",
+            parent_bg="#ffffff",
+            bg=self.C_ACTION_BLUE,
+            hover_bg=self.C_ACTION_BLUE_H,
+            command=_apply_manual_kind,
+            radius=14,
+            height=40,
+            font=self.FONT_BTN_SM,
+            width=260,
+            shadow=True,
+            shadow_offset=1,
+            shadow_color="#1e293b",
+        ).grid(row=11, column=0, sticky="w", pady=(0, 8))
+
+        ClinicButton(
+            btns,
+            text="Seleccionar automáticas",
+            parent_bg=self.C_BG,
+            bg=self.C_ACTION_BLUE,
+            hover_bg=self.C_ACTION_BLUE_H,
+            command=_select_auto,
+            radius=14,
+            height=40,
+            font=self.FONT_BTN_SM,
+            width=220,
+            shadow=True,
+            shadow_offset=1,
+            shadow_color="#1e293b",
+        ).pack(side="left", padx=(0, 8))
+
+        ClinicButton(
+            btns,
+            text="Procesar seleccionadas",
+            parent_bg=self.C_BG,
+            bg=self.C_ACTION_GREEN,
+            hover_bg=self.C_ACTION_GREEN_H,
+            command=_process_selected,
+            radius=14,
+            height=40,
+            font=self.FONT_BTN_SM,
+            width=220,
+            shadow=True,
+            shadow_offset=1,
+            shadow_color="#1e293b",
+        ).pack(side="left", padx=(0, 8))
+
+        ClinicButton(
+            btns,
+            text="Cerrar",
+            parent_bg=self.C_BG,
+            bg="#64748b",
+            hover_bg="#475569",
+            command=win.destroy,
+            radius=14,
+            height=40,
+            font=self.FONT_BTN_SM,
+            width=120,
+            shadow=True,
+            shadow_offset=1,
+            shadow_color="#1e293b",
+        ).pack(side="left")
+
+        if rows:
+            first = tree.get_children()[0]
+            tree.selection_set(first)
+            tree.focus(first)
+            _update_editor_from_selection()
 
     def import_ot_pdf(self):
         # 1) Abrir selector en Descargas
@@ -1234,6 +1973,15 @@ class Launcher(tk.Tk):
 
         # 2) Guardar como OT “pendiente”
         self._pending_ot_src = src
+
+        # ✅ Autodetección del tipo de OT (por texto/nombre)
+        detected = None
+        try:
+            detected = classify_ot_pdf(src)  # "UNIQUE", "HALCYON_1", "HALCYON_2", "HALCYON", "SIEMENS", etc.
+        except Exception:
+            detected = None
+
+        self._pending_ot_detected_kind = detected
 
         # 3) Abrir ventana OT (ahora sirve para elegir tipo y guardar)
         self.open_ot_window()
@@ -1334,8 +2082,27 @@ class Launcher(tk.Tk):
         def _on_combo_change(event=None):
             label = (self._ot_kind_var.get() or "").strip()
             key = self._ot_kind_map.get(label)
+
             if key:
                 self._ot_show_desc(key)
+
+            # ✅ regla de habilitación del botón Guardar
+            if self._pending_ot_src is None:
+                self._ot_save_btn.set_enabled(False)
+                return
+
+            detected = getattr(self, "_pending_ot_detected_kind", None)
+
+            # Si detectamos HALCYON genérico, obligar a elegir un HALCYON_n
+            if detected == "HALCYON":
+                if key and str(key).startswith("HALCYON_"):
+                    self._ot_save_btn.set_enabled(True)
+                else:
+                    self._ot_save_btn.set_enabled(False)
+                return
+
+            # Caso normal: si hay PDF, permitir guardar
+            self._ot_save_btn.set_enabled(True)
 
         combo.bind("<<ComboboxSelected>>", _on_combo_change)
 
@@ -1357,8 +2124,36 @@ class Launcher(tk.Tk):
         )
         self._ot_save_btn.grid(row=1, column=1, sticky="e")
 
-        # Selección inicial
-        self._ot_kind_var.set("UNIQUE")
+        # ✅ Selección inicial (autodetectada si se puede)
+        detected = getattr(self, "_pending_ot_detected_kind", None)
+
+        # Map key -> label (porque el combo usa labels)
+        key_to_label = {item["key"]: item["label"] for item in OT_BUTTONS}
+
+        if detected == "HALCYON":
+            # Caso especial: sabemos que es Halcyon, pero no su número
+            self._ot_kind_var.set("")
+            self._ot_show_desc("HALCYON_1")
+            self._ot_save_btn.set_enabled(False)
+
+            messagebox.showinfo(
+                "HALCYON detectado",
+                "Detecté que este PDF corresponde a HALCYON, pero no pude distinguir si es HALCYON1, HALCYON2 u otro.\n\n"
+                "Por favor selecciona manualmente el equipo HALCYON correspondiente antes de guardar."
+            )
+        elif detected in key_to_label:
+            self._ot_kind_var.set(key_to_label[detected])
+            self._ot_save_btn.set_enabled(True)
+            self.status_var.set(f"OT detectada automáticamente: {detected}")
+        else:
+            # fallback
+            self._ot_kind_var.set("UNIQUE")
+            self._ot_save_btn.set_enabled(True)
+            if detected is None:
+                self.status_var.set("No se pudo detectar el tipo de OT (selecciona manualmente).")
+            else:
+                self.status_var.set(f"OT detectada: {detected} (no mapeada al combo).")
+
         _on_combo_change()
 
         # Panel descripción
@@ -1425,6 +2220,18 @@ class Launcher(tk.Tk):
         if not key:
             messagebox.showwarning("Tipo no seleccionado", "Selecciona un tipo/equipo antes de guardar.")
             return
+        
+        detected = getattr(self, "_pending_ot_detected_kind", None)
+        if key == "UNIQUE" and detected and detected != "UNIQUE":
+            ok = messagebox.askyesno(
+                "Advertencia",
+                f"Este PDF parece ser: {detected}\n\n"
+                "Si lo guardas como UNIQUE se ejecutará P1 y puede generar TXT/Excel incorrectos.\n\n"
+                "¿Quieres guardarlo igual como UNIQUE?"
+            )
+            if not ok:
+                return
+
 
         self._ot_select_and_save(key)
 
@@ -1446,14 +2253,37 @@ class Launcher(tk.Tk):
         # Regla de carpetas por tipo
         if kind == "UNIQUE":
             dst_dir = base / "ICLINIC" / "UNIQUE"
-        elif kind in ("HALCYON_1", "HALCYON_2"):
+        elif kind.startswith("HALCYON_"):
             dst_dir = base / "ECM" / kind
+        elif kind == "CONTROL DE CALIDAD":
+            dst_dir = base / "ECM" / "CONTROL_DE_CALIDAD"
         elif kind == "SIEMENS":
             dst_dir = base / "SIEMENS"
         else:
             dst_dir = base / "OTs_OTROS" / kind
 
         dst_dir.mkdir(parents=True, exist_ok=True)
+
+        # Validar conflictos visibles (PDF/TXT) antes de ejecutar extractores.
+        try:
+            txt_preview = extract_pdf_text(src)
+        except Exception:
+            txt_preview = ""
+        ot_preview = _extract_ot_number_from_path_or_text(src, txt_preview)
+        conflicts = _existing_output_conflicts(src, kind, ot_preview)
+        if conflicts:
+            lines = [str(x) for x in conflicts[:8]]
+            extra = "" if len(conflicts) <= 8 else f"\n... y {len(conflicts)-8} salida(s) más."
+            resp = messagebox.askyesno(
+                "Salida existente",
+                "Ya existen estas salidas para la OT seleccionada:\n\n"
+                + "\n".join(lines)
+                + extra
+                + "\n\n¿Quieres sobrescribirlas?"
+            )
+            if not resp:
+                self.status_var.set("No se sobrescribió la OT seleccionada.")
+                return
 
         # ✅ CASO UNIQUE: NO COPIAMOS el PDF aquí.
         # Dejamos que P1 lo guarde con SU formato (y así queda solo 1 PDF en la carpeta).
@@ -1463,7 +2293,14 @@ class Launcher(tk.Tk):
             self.status_var.set("UNIQUE: ejecutando extracción + guardado desde P1…")
             return
 
-        # ✅ RESTO (HALCYON, etc.): copiamos normalmente (porque no usan P1)
+        # ✅ CASO HALCYON_n o CONTROL DE CALIDAD: usa P5
+        if kind.startswith("HALCYON_") or kind == "CONTROL DE CALIDAD":
+            p5_script = (HERE / "P5_Extractor_Halcyon_corregido_v9_silent.py") if (HERE / "P5_Extractor_Halcyon_corregido_v9_silent.py").exists() else (HERE / "P5_Extractor_Halcyon.py")
+            run_script(p5_script, args=[str(src), str(dst_dir)])
+            self.status_var.set(f"{kind}: ejecutando extracción + guardado desde P5…")
+            return
+        
+        # ✅ RESTO (SIEMENS, etc.): copiamos normalmente (porque no usan P1)
         dst = dst_dir / src.name
 
         if dst.exists():
@@ -1500,8 +2337,18 @@ class Launcher(tk.Tk):
         run_script(p["script"])
 
 def main():
-    Launcher().mainloop()
-
+    # Primero mostrar ventana de login
+    login = LoginWindow()
+    login.mainloop()
+    
+    # Solo abrir el launcher si el login fue exitoso
+    if login.login_successful:
+        app = Launcher()
+        app.mainloop()
+    else:
+        # Si el usuario cerró la ventana sin hacer login, salir
+        sys.exit(0)
 
 if __name__ == "__main__":
     main()
+
