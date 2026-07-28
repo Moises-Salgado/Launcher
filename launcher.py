@@ -686,10 +686,13 @@ class Launcher(tk.Tk):
         self._populate()
         self._select_first()
 
+        # Asegurar ventana “maximizada” también en escritorios donde zoomed/-zoomed no funcione
+        self.after(50, self._ensure_maximized_like)
+
         # Enter abre el seleccionado
         self.bind("<Return>", lambda e: self.open_selected())
 
-        # Esc: si está fullscreen, sale; si no, cierra (opcional)
+        # Esc: si está fullscreen (F11), sale; si no, cierra
         def on_escape(event=None):
             if getattr(self, "_is_fullscreen", False):
                 self._is_fullscreen = False
@@ -698,6 +701,28 @@ class Launcher(tk.Tk):
                 self.destroy()
 
         self.bind("<Escape>", on_escape)
+
+    def _ensure_maximized_like(self):
+        """
+        Fallback para que la ventana de launcher se abra lo más grande posible
+        cuando state('zoomed') / -zoomed no tienen efecto en el sistema.
+        """
+        # Si ya está en modo fullscreen (F11), no tocar
+        if getattr(self, "_is_fullscreen", False):
+            return
+
+        # Calcula tamaño de pantalla y ocupa prácticamente todo
+        try:
+            sw = self.winfo_screenwidth()
+            sh = self.winfo_screenheight()
+            # Dejamos un pequeño margen para que se vean bien los bordes del WM
+            w = int(sw * 0.98)
+            h = int(sh * 0.96)
+            x = max(0, (sw - w) // 2)
+            y = max(0, (sh - h) // 2)
+            self.geometry(f"{w}x{h}+{x}+{y}")
+        except Exception:
+            pass
 
     def _pick_font_family(self) -> str:
         """
