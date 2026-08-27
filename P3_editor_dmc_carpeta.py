@@ -2,6 +2,7 @@ import os
 import re
 import shutil
 import tkinter as tk
+from ui_theme import *
 from tkinter import ttk, filedialog, messagebox
 from tkinter.scrolledtext import ScrolledText
 from datetime import datetime
@@ -431,17 +432,19 @@ class DicomPatientFolderEditor(tk.Tk):
         self._fit_mode = True
         self.viewer = None
 
-        # Tema CLARO
-        self.C_BG = "#f6f7fb"
-        self.C_PANEL = "#ffffff"
-        self.C_CARD = "#ffffff"
-        self.C_TEXT = "#111827"
-        self.C_MUTED = "#6b7280"
-        self.C_ACCENT = "#2563eb"
-        self.C_OK = "#16a34a"
+        apply_medical_theme(self)
+
+        # Mapeo a las variables de ui_theme para compatibilidad con el resto del código P3
+        self.C_BG = C_BG
+        self.C_PANEL = C_CARD
+        self.C_CARD = C_CARD_INNER
+        self.C_TEXT = C_TEXT
+        self.C_MUTED = C_MUTED
+        self.C_ACCENT = C_ACTION_BLUE
+        self.C_OK = C_ACTION_GREEN
         self.C_WARN = "#d97706"
-        self.C_DANGER = "#dc2626"
-        self.C_BORDER = "#e5e7eb"
+        self.C_DANGER = C_DANGER
+        self.C_BORDER = C_BORDER
 
         # --- Checkbox icons (persistentes) ---
         self._img_cb_off = self._make_checkbox_icon(checked=False)
@@ -450,7 +453,7 @@ class DicomPatientFolderEditor(tk.Tk):
         # Si no existe aún
         self.selected_series_uids = set()
 
-        self.title("Editor y Visualizador DICOM")
+        self.title("Editor de nombres y visualizador DICOM")
         self.geometry("1040x720")
         self.minsize(980, 680)
         self.configure(bg=self.C_BG)
@@ -952,14 +955,25 @@ class DicomPatientFolderEditor(tk.Tk):
 # ---------- UI ----------
 
     def _build_ui(self):
+        topbar = tk.Frame(self, bg=C_CARD, padx=24, pady=13)
+        topbar.pack(fill="x")
+        tk.Label(
+            topbar, text="Centro de Comando Clínico", bg=C_CARD, fg=C_TEXT,
+            font=("TkDefaultFont", 15, "bold"),
+        ).pack(side="left")
+        tk.Label(
+            topbar, text="●  EJECUCIÓN LOCAL", bg=C_CARD_INNER,
+            fg=C_ACTION_BLUE, font=("TkDefaultFont", 9, "bold"), padx=14, pady=6,
+        ).pack(side="right")
+
         # Header
         header = ttk.Frame(self, padding=(18, 16), style="Panel.TFrame")
         header.pack(fill="x", padx=14, pady=(14, 10))
 
-        ttk.Label(header, text="Editor DICOM", style="Header.TLabel").pack(anchor="w")
+        ttk.Label(header, text="Editor de nombres y visualizador DICOM", style="Header.TLabel").pack(anchor="w")
         ttk.Label(
             header,
-            text="Programa editor del Nombre del paciente y visualizador DICOM básico",
+            text="Editor del Nombre del Paciente y visualizador DICOM básico",
             style="Subheader.TLabel"
         ).pack(anchor="w", pady=(6, 0))
 
@@ -978,7 +992,7 @@ class DicomPatientFolderEditor(tk.Tk):
         self.nb.add(self.tab_edit, text=" Editar ")
         self.nb.add(self.tab_view, text=" Vista DICOM ")
         self.nb.add(self.tab_details, text=" Detalles ")
-        self.nb.add(self.tab_save, text=" Guardar Cómo ")
+        self.nb.add(self.tab_save, text=" Guardar como ")
 
         self._build_tab_load()
         self._build_tab_edit()

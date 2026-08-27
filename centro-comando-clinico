@@ -1,0 +1,20 @@
+#!/bin/sh
+set -eu
+
+app_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+if [ -x "$app_dir/.venv/bin/python" ]; then
+    python_exec="$app_dir/.venv/bin/python"
+else
+    python_exec="python3"
+fi
+
+# Respaldo local para Ubuntu/X11 cuando libxcb-cursor0 todavía no está
+# instalada en el sistema. El instalador definitivo podrá instalar el paquete
+# del sistema y esta ruta simplemente dejará de ser necesaria.
+qt_native_dir="$app_dir/.venv/lib/qt-native/usr/lib/x86_64-linux-gnu"
+if [ -d "$qt_native_dir" ]; then
+    export LD_LIBRARY_PATH="$qt_native_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
+
+exec "$python_exec" "$app_dir/launcher.py" "$@"

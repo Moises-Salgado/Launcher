@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.py[cod]
+config.json
+.build/
+dist/
+
+# Resultados generados por las herramientas clínicas
+DICOM_Export/
+Resumen/
+UNIQUE.xlsx

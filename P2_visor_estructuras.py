@@ -1,4 +1,5 @@
 import tkinter as tk
+from ui_theme import *
 from tkinter import ttk, filedialog, messagebox
 import re
 import unicodedata
@@ -209,8 +210,10 @@ def parse_txt_grouped(path: str):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Visor de Órganos")
-        self.geometry("1050x620")
+        self.title("Visor TXT de Estructuras — Centro de Comando Clínico")
+        self.geometry("1180x760")
+        self.minsize(920, 620)
+        apply_medical_theme(self)
 
         self.meta_global = {}
         self.groups = {}
@@ -219,43 +222,87 @@ class App(tk.Tk):
         self._build_ui()
 
     def _build_ui(self):
-        top = ttk.Frame(self, padding=8)
-        top.pack(fill="x")
+        topbar = tk.Frame(self, bg=C_CARD, padx=24, pady=13)
+        topbar.pack(fill="x")
+        tk.Label(
+            topbar, text="Centro de Comando Clínico", bg=C_CARD, fg=C_TEXT,
+            font=("TkDefaultFont", 15, "bold"),
+        ).pack(side="left")
+        tk.Label(
+            topbar, text="●  EJECUCIÓN LOCAL", bg=C_CARD_INNER,
+            fg=C_ACTION_BLUE, font=("TkDefaultFont", 9, "bold"), padx=14, pady=6,
+        ).pack(side="right")
 
-        ttk.Button(top, text="Abrir TXT...", command=self.open_file).pack(side="left")
-        self.file_label = ttk.Label(top, text="(sin archivo)")
-        self.file_label.pack(side="left", padx=10)
+        header = tk.Frame(self, bg=C_BG, padx=24, pady=18)
+        header.pack(fill="x")
+        title = tk.Frame(header, bg=C_BG)
+        title.pack(side="left", fill="x", expand=True)
+        tk.Label(
+            title, text="Visor TXT de Estructuras", bg=C_BG, fg=C_TEXT,
+            font=("TkDefaultFont", 22, "bold"),
+        ).pack(anchor="w")
+        self.file_label = tk.Label(
+            title, text="Sin archivo", bg=C_BG, fg=C_MUTED,
+            font=("TkDefaultFont", 9), anchor="w",
+        )
+        self.file_label.pack(fill="x", pady=(5, 0))
+        tk.Label(
+            header, text="SOLO LECTURA", bg="#e7e7f3", fg=C_MUTED,
+            font=("TkDefaultFont", 8, "bold"), padx=12, pady=7,
+        ).pack(side="right", padx=(12, 0))
+        ttk.Button(
+            header, text="Abrir TXT", style="Accent.TButton", command=self.open_file,
+        ).pack(side="right")
+
+        separator = ttk.Separator(self)
+        separator.pack(fill="x")
 
         paned = ttk.Panedwindow(self, orient="horizontal")
-        paned.pack(fill="both", expand=True, padx=8, pady=8)
+        paned.pack(fill="both", expand=True)
 
-        # Left
-        left = ttk.Frame(paned, padding=8)
+        left = tk.Frame(paned, bg=C_CARD_INNER, padx=18, pady=18)
         paned.add(left, weight=1)
 
-        ttk.Label(left, text="Órganos / Estructuras").pack(anchor="w")
+        tk.Label(
+            left, text="ESTRUCTURAS IDENTIFICADAS", bg=C_CARD_INNER,
+            fg=C_MUTED, font=("TkDefaultFont", 8, "bold"),
+        ).pack(anchor="w")
 
-        search_frame = ttk.Frame(left)
-        search_frame.pack(fill="x", pady=(6, 6))
-        ttk.Label(search_frame, text="Buscar:").pack(side="left")
+        search_frame = tk.Frame(left, bg=C_CARD_INNER)
+        search_frame.pack(fill="x", pady=(12, 12))
         self.search_var = tk.StringVar()
         self.search_var.trace_add("write", lambda *_: self.refresh_list())
-        ttk.Entry(search_frame, textvariable=self.search_var).pack(side="left", fill="x", expand=True, padx=6)
+        ttk.Entry(search_frame, textvariable=self.search_var).pack(side="left", fill="x", expand=True)
 
-        self.listbox = tk.Listbox(left, height=18)
+        self.listbox = tk.Listbox(
+            left, height=18, relief="flat", borderwidth=0,
+            bg=C_CARD_INNER, fg=C_TEXT, selectbackground="#dbe1ff",
+            selectforeground=C_ACTION_BLUE, activestyle="none",
+            font=("TkDefaultFont", 11), highlightthickness=0,
+        )
         self.listbox.pack(fill="both", expand=True)
         self.listbox.bind("<<ListboxSelect>>", self.on_select_group)
 
-        # Right
-        right = ttk.Frame(paned, padding=8)
+        right = tk.Frame(paned, bg=C_BG, padx=26, pady=24)
         paned.add(right, weight=3)
 
-        ttk.Label(right, text="Datos globales", font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
-        self.meta_text = tk.Text(right, height=6, wrap="word")
+        tk.Label(
+            right, text="Datos globales del plan", bg=C_BG, fg=C_TEXT,
+            font=("TkDefaultFont", 14, "bold"),
+        ).pack(anchor="w")
+        self.meta_text = tk.Text(
+            right, height=6, wrap="word", relief="flat", borderwidth=1,
+            bg=C_CARD, fg=C_TEXT, highlightthickness=1,
+            highlightbackground=C_BORDER, padx=14, pady=12,
+            font=("TkDefaultFont", 10),
+        )
         self.meta_text.pack(fill="x", pady=(6, 10))
         self.meta_text.configure(state="disabled")
 
-        self.sel_title = ttk.Label(right, text="Seleccione un órgano...", font=("TkDefaultFont", 11, "bold"))
+        self.sel_title = tk.Label(
+            right, text="Seleccione un órgano o estructura", bg=C_BG, fg=C_TEXT,
+            font=("TkDefaultFont", 16, "bold"),
+        )
         self.sel_title.pack(anchor="w", pady=(6, 8))
 
         self.nb = ttk.Notebook(right)
@@ -322,7 +369,7 @@ class App(tk.Tk):
             self.nb.forget(tab_id)
 
     def make_tab(self, title: str, fields: dict, raw: str):
-        frame = ttk.Frame(self.nb, padding=8)
+        frame = ttk.Frame(self.nb, padding=14, style="Card.TFrame")
 
         tree = ttk.Treeview(frame, columns=("campo", "valor"), show="headings", height=8)
         tree.heading("campo", text="Campo")
@@ -334,8 +381,14 @@ class App(tk.Tk):
         for k in DOSE_KEYS:
             tree.insert("", "end", values=(k, fields.get(k, "(no encontrado)")))
 
-        ttk.Label(frame, text="Texto del bloque (cabecera antes de DVH):").pack(anchor="w", pady=(10, 6))
-        txt = tk.Text(frame, wrap="word", height=12)
+        ttk.Label(
+            frame, text="Texto del bloque antes de DVH", style="CardTitle.TLabel",
+        ).pack(anchor="w", pady=(16, 7))
+        txt = tk.Text(
+            frame, wrap="word", height=12, relief="flat", borderwidth=0,
+            bg="#2e3039", fg="#f0f0fb", insertbackground="#f0f0fb",
+            font=("TkFixedFont", 10), padx=14, pady=12,
+        )
         txt.pack(fill="both", expand=True)
         txt.insert("1.0", raw if raw else "(vacío)")
         txt.configure(state="disabled")

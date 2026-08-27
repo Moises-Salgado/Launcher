@@ -1,0 +1,16 @@
+# Interfaz nativa
+PySide6>=6.8,<7
+
+# Procesamiento PDF y planillas (P1 UNIQUE + ECM/Halcyon)
+PyMuPDF>=1.24
+camelot-py>=0.11
+pandas>=2.0
+openpyxl>=3.1
+
+# Procesamiento y visualización DICOM (P3/P4)
+pydicom>=3.0.2,<4
+numpy>=1.26
+Pillow>=10.0
+pylibjpeg>=2.1,<3
+pylibjpeg-libjpeg>=2.4,<3
+pylibjpeg-openjpeg>=2.5,<3

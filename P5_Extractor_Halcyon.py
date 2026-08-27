@@ -1,5 +1,5 @@
-# P5_Extractor_Halcyon.py
-# Extrae campos clave desde OT Halcyon / ECM y guarda:
+# Motor de extracción ECM reutilizado por P1.
+# Extrae campos clave desde OT Halcyon / Control de Calidad / ECM y guarda:
 # - PDF ORIGINAL (mismo nombre) en carpeta destino
 # - TXT resumen ordenado por secciones en carpeta destino/Resumen
 # - Excel HALCYON.xlsx en carpeta destino/Resumen (una hoja por OT)
@@ -7,6 +7,7 @@
 import sys
 import re
 import traceback
+from config_manager import get_ots_dir
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -25,20 +26,20 @@ def _show_error(title: str, msg: str):
     if SILENT_MODE:
         print(f"[ERROR] {title}: {msg}")
     else:
-        _show_error(title, msg)
+        messagebox.showerror(title, msg)
 
 
 def _show_info(title: str, msg: str):
     if SILENT_MODE:
         print(f"[INFO] {title}: {msg}")
     else:
-        _show_info(title, msg)
+        messagebox.showinfo(title, msg)
 
 
 def _ask_yes_no(title: str, msg: str, default_yes: bool = True) -> bool:
     if SILENT_MODE:
         return default_yes
-    return _ask_yes_no(title, msg)
+    return messagebox.askyesno(title, msg)
 
 
 def _primer_dir_existente(*candidatos: Path) -> str:
@@ -1228,9 +1229,7 @@ def main():
         if out_dir_arg is not None:
             out_dir = Path(out_dir_arg)
         else:
-            home = Path.home()
-            escritorio_dir = Path(_primer_dir_existente(home / "Escritorio", home / "Desktop"))
-            out_dir = escritorio_dir / "OTs" / "ECM" / "HALCYON"
+            out_dir = get_ots_dir() / "ECM" / "HALCYON"
 
         texto = _read_pdf_text(ruta_pdf)
         if not texto:

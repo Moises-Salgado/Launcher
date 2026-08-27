@@ -1,6 +1,6 @@
 import fitz  # libreria para leer y extrar texto de un pdf
 import tkinter as tk  # libreria para crear interfaces graficas
-from tkinter import filedialog, messagebox  # libreria para abrir cuadros de dialogo y mensajes
+from tkinter import filedialog, messagebox, ttk  # diálogos y widgets nativos
 import re  # libreria para trabajar con expresiones regulares
 from datetime import datetime  # libreria para trabajar con fechas y horas
 import camelot
@@ -8,7 +8,9 @@ import pandas as pd
 from pathlib import Path
 import sys
 import traceback
+from config_manager import get_ots_dir
 import shutil
+from ui_theme import C_ACTION_BLUE, C_BG, C_BORDER, C_CARD, C_CARD_INNER, C_MUTED, C_TEXT, apply_medical_theme
 
 
 def _primer_dir_existente(*candidatos: Path) -> str:
@@ -16,6 +18,115 @@ def _primer_dir_existente(*candidatos: Path) -> str:
         if c.exists() and c.is_dir():
             return str(c)
     return str(Path.home())
+
+
+def seleccionar_pdf_visual(root: tk.Tk, initial_dir: str) -> str:
+    """Muestra el selector inicial con la apariencia del diseño Stitch."""
+    for child in root.winfo_children():
+        child.destroy()
+
+    selected_path = tk.StringVar(value="")
+    display_path = tk.StringVar(value="Ningún archivo seleccionado")
+    finished = tk.BooleanVar(value=False)
+
+    root.title("Extraer datos desde PDF — Centro de Comando Clínico")
+    root.geometry("1080x650")
+    root.minsize(840, 560)
+    root.configure(bg=C_BG)
+
+    topbar = tk.Frame(root, bg=C_CARD, padx=24, pady=14)
+    topbar.pack(fill="x")
+    tk.Label(
+        topbar, text="Centro de Comando Clínico", bg=C_CARD, fg=C_TEXT,
+        font=("TkDefaultFont", 15, "bold"),
+    ).pack(side="left")
+    tk.Label(
+        topbar, text="●  EJECUCIÓN LOCAL", bg=C_CARD_INNER,
+        fg=C_ACTION_BLUE, font=("TkDefaultFont", 9, "bold"), padx=14, pady=6,
+    ).pack(side="right")
+
+    main = tk.Frame(root, bg=C_BG, padx=52, pady=34)
+    main.pack(fill="both", expand=True)
+    tk.Label(
+        main, text="Extracción de datos PDF", bg=C_BG, fg=C_TEXT,
+        font=("TkDefaultFont", 24, "bold"),
+    ).pack(anchor="w", pady=(0, 24))
+
+    border = tk.Frame(main, bg=C_BORDER, padx=1, pady=1)
+    border.pack(fill="both", expand=True)
+    panel = tk.Frame(border, bg=C_CARD_INNER, padx=40, pady=38)
+    panel.pack(fill="both", expand=True)
+
+    center = tk.Frame(panel, bg=C_CARD_INNER)
+    center.place(relx=.5, rely=.5, anchor="center")
+    tk.Label(
+        center, text="⇧", bg="#dbe1ff", fg=C_ACTION_BLUE,
+        font=("TkDefaultFont", 26, "bold"), width=3, height=1,
+    ).pack(pady=(0, 18))
+    tk.Label(
+        center, text="Seleccionar Orden de Trabajo", bg=C_CARD_INNER,
+        fg=C_TEXT, font=("TkDefaultFont", 15, "bold"),
+    ).pack()
+    tk.Label(
+        center,
+        text=(
+            "Seleccione un archivo PDF local para extraer sus datos, tiempos "
+            "y subtareas. El archivo se procesa únicamente en este equipo."
+        ),
+        bg=C_CARD_INNER, fg=C_MUTED, font=("TkDefaultFont", 10),
+        justify="center", wraplength=560,
+    ).pack(pady=(10, 20))
+
+    def browse() -> None:
+        path = filedialog.askopenfilename(
+            title="Seleccione el PDF",
+            filetypes=[("PDF", "*.pdf")],
+            initialdir=initial_dir,
+            parent=root,
+        )
+        if path:
+            selected_path.set(path)
+            display_path.set(path)
+            process_button.configure(state="normal")
+
+    ttk.Button(
+        center, text="Examinar archivos locales", style="Accent.TButton",
+        command=browse,
+    ).pack()
+    tk.Label(
+        center, text="Solo archivos .pdf", bg=C_CARD_INNER, fg=C_MUTED,
+        font=("TkDefaultFont", 9),
+    ).pack(pady=(10, 14))
+    tk.Label(
+        center, textvariable=display_path, bg=C_CARD_INNER, fg=C_TEXT,
+        font=("TkDefaultFont", 9), wraplength=620,
+    ).pack()
+
+    actions = tk.Frame(main, bg=C_BG)
+    actions.pack(fill="x", pady=(18, 0))
+
+    def accept() -> None:
+        if selected_path.get():
+            finished.set(True)
+
+    process_button = ttk.Button(
+        actions, text="Extraer datos", style="Accent.TButton",
+        command=accept, state="disabled",
+    )
+    process_button.pack(side="right")
+
+    def close() -> None:
+        selected_path.set("")
+        finished.set(True)
+
+    root.protocol("WM_DELETE_WINDOW", close)
+    root.deiconify()
+    root.lift()
+    root.wait_variable(finished)
+    result = selected_path.get()
+    root.withdraw()
+    root.update_idletasks()
+    return result
 
 # Clase principal para extraer datos de un PDF
 class ExtractorPDF:    
@@ -1318,15 +1429,12 @@ class ExtractorPDF:
             # ✅ TXT dentro de Resumen
             ruta_txt = str(resumen_dir / sugerido)
         else:
-            home = Path.home()
-            escritorio_dir = _primer_dir_existente(home / "Escritorio", home / "Desktop")
-
             ruta_txt = filedialog.asksaveasfilename(
                 title="Guardar datos (TXT)",
                 defaultextension=".txt",
                 filetypes=[("Archivos de texto", "*.txt")],
                 initialfile=sugerido,
-                initialdir=escritorio_dir
+                initialdir=get_ots_dir()
             )
 
             if not ruta_txt:
@@ -1425,6 +1533,7 @@ def main():
 
     # Crear root de Tk (oculto) para que file dialogs/messagebox funcionen bien
     root = tk.Tk()
+    apply_medical_theme(root)
     root.withdraw()
     root.update()
 
@@ -1448,11 +1557,7 @@ def main():
             descargas_dir = _primer_dir_existente(home / "Descargas", home / "Downloads")
 
             print("Selecciona el archivo PDF para extraer datos...")
-            ruta_pdf = filedialog.askopenfilename(
-                title="Seleccione el PDF",
-                filetypes=[("PDF", "*.pdf")],
-                initialdir=descargas_dir
-            )
+            ruta_pdf = seleccionar_pdf_visual(root, descargas_dir)
 
             if not ruta_pdf:
                 print("No se seleccionó ningún archivo.")

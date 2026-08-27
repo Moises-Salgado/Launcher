@@ -8,8 +8,10 @@ import queue
 from dataclasses import dataclass
 from collections import defaultdict
 import sys
+import tkinter as tk
 from tkinter import Tk, Toplevel, filedialog, StringVar, BooleanVar, ttk, messagebox, PhotoImage
 from tkinter.scrolledtext import ScrolledText
+from ui_theme import C_ACTION_BLUE, C_BG, C_BORDER, C_CARD, C_CARD_INNER, C_MUTED, C_TEXT, apply_medical_theme
 
 import pydicom
 from pydicom.errors import InvalidDicomError
@@ -220,6 +222,7 @@ def process_all(
     dst_root: str,
     use_gdcm: bool,
     copy_nondicom: bool,
+    anonimize_test: bool,
     q: queue.Queue
 ):
     try:
@@ -390,6 +393,48 @@ def process_all(
                     except Exception:
                         pass
 
+                # --- FIX ECLIPSE MR FUSION PIXELATION & ANONIMIZATION ---
+                # Si MR tiene cortes solapados, forzamos Thickness = Spacing para engañar a Eclipse.
+                # Además, si se activó la anonimización, cambiamos PatientName y PatientID.
+                if (anonimize_test or mod == "MR") and os.path.exists(ok_dst):
+                    try:
+                        ds_mod = pydicom.dcmread(ok_dst)
+                        modified = False
+
+                        if anonimize_test:
+                            ds_mod.PatientName = "TEST CYC"
+                            ds_mod.PatientID = "000000000"
+                            modified = True
+
+                        if mod == "MR":
+                            # 1) Eliminar etiquetas Rescale/Window que corrompen el brillo en Eclipse
+                            for tag in [(0x0028, 0x1052), (0x0028, 0x1053), (0x0028, 0x1050), (0x0028, 0x1051)]:
+                                if tag in ds_mod:
+                                    del ds_mod[tag]
+                                    modified = True
+
+                            # 2) Forzar Thickness = Spacing si hay solapamiento (Evita pixelado 3D)
+                            spacing = None
+                            if (0x0018, 0x0088) in ds_mod:
+                                spacing = ds_mod[0x0018, 0x0088].value
+
+                            if spacing is not None and (0x0018, 0x0050) in ds_mod:
+                                thickness = ds_mod[0x0018, 0x0050].value
+                                try:
+                                    sp_val = float(spacing)
+                                    th_val = float(thickness)
+                                    if abs(sp_val - th_val) > 0.001:
+                                        ds_mod[0x0018, 0x0050].value = spacing
+                                        modified = True
+                                except ValueError:
+                                    pass
+
+                        if modified:
+                            pydicom.dcmwrite(ok_dst, ds_mod)
+                    except Exception:
+                        pass
+                # ----------------------------------------
+
                 continue
 
             # OTHER_DICOM: por defecto NO lo metas a Eclipse, pero NO lo pierdas:
@@ -459,49 +504,158 @@ def process_all(
 class App:
     def __init__(self, master: Tk):
         self.master = master
-        master.title("Preparar archivos DICOM para Eclipse (sin perder datos)")
+        master.title("Compatibilizar CD para Eclipse — Centro de Comando Clínico")
+        master.geometry("1240x780")
+        master.minsize(980, 680)
 
         self._set_app_icon()
         self.src_var = StringVar()
         self.dst_var = StringVar()
         self.use_gdcm_var = BooleanVar(value=True)
         self.copy_nondicom_var = BooleanVar(value=True)
-
-        frm = ttk.Frame(master, padding=10)
-        frm.grid(row=0, column=0, sticky="nsew")
+        self.anonimize_test_var = BooleanVar(value=False)
 
         master.columnconfigure(0, weight=1)
         master.rowconfigure(0, weight=1)
-        frm.columnconfigure(1, weight=1)
 
-        ttk.Label(frm, text="Selecciona carpeta origen:").grid(row=0, column=0, sticky="w")
-        ttk.Entry(frm, textvariable=self.src_var).grid(row=0, column=1, sticky="ew", padx=5)
-        ttk.Button(frm, text="Elegir...", command=self.pick_src).grid(row=0, column=2)
+        shell = tk.Frame(master, bg=C_BG)
+        shell.grid(row=0, column=0, sticky="nsew")
+        shell.columnconfigure(0, weight=5)
+        shell.columnconfigure(1, weight=7)
+        shell.rowconfigure(1, weight=1)
 
-        ttk.Label(frm, text="Selecciona donde guardar:").grid(row=1, column=0, sticky="w")
-        ttk.Entry(frm, textvariable=self.dst_var).grid(row=1, column=1, sticky="ew", padx=5)
-        ttk.Button(frm, text="Elegir...", command=self.pick_dst).grid(row=1, column=2)
+        topbar = tk.Frame(shell, bg=C_CARD, padx=24, pady=13)
+        topbar.grid(row=0, column=0, columnspan=2, sticky="ew")
+        tk.Label(
+            topbar, text="Centro de Comando Clínico", bg=C_CARD, fg=C_TEXT,
+            font=("TkDefaultFont", 15, "bold"),
+        ).pack(side="left")
+        tk.Label(
+            topbar, text="●  EJECUCIÓN LOCAL", bg=C_CARD_INNER,
+            fg=C_ACTION_BLUE, font=("TkDefaultFont", 9, "bold"), padx=14, pady=6,
+        ).pack(side="right")
 
-        ttk.Checkbutton(frm, text="Mejor compatibilidad: usar conversión alternativa si es necesario (recomendado)", variable=self.use_gdcm_var)\
-            .grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        left = tk.Frame(shell, bg=C_BG, padx=20, pady=22)
+        left.grid(row=1, column=0, sticky="nsew")
+        right = tk.Frame(shell, bg=C_BG, padx=0, pady=22)
+        right.grid(row=1, column=1, sticky="nsew", padx=(10, 20))
+        right.columnconfigure(0, weight=1)
+        right.rowconfigure(0, weight=1)
 
-        ttk.Checkbutton(frm, text="Guardar también los archivos que NO son DICOM en una carpeta aparte (recomendado para no perder datos)", variable=self.copy_nondicom_var)\
-            .grid(row=3, column=0, columnspan=3, sticky="w", pady=(2, 8))
+        tk.Label(
+            left, text="Compatibilizar CD para Eclipse", bg=C_BG, fg=C_TEXT,
+            font=("TkDefaultFont", 22, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            left,
+            text=(
+                "Acondicionamiento de archivos DICOM provenientes del HGGB, "
+                "Clínica Los Andes, Clínica Biobío y otras instituciones."
+            ),
+            bg=C_BG, fg=C_MUTED, font=("TkDefaultFont", 10),
+            justify="left", wraplength=470,
+        ).pack(anchor="w", pady=(7, 20))
 
-        self.btn_run = ttk.Button(frm, text="Procesar", command=self.run)
-        self.btn_run.grid(row=4, column=0, sticky="w")
+        locations_border = tk.Frame(left, bg=C_BORDER, padx=1, pady=1)
+        locations_border.pack(fill="x")
+        locations = tk.Frame(locations_border, bg=C_CARD_INNER, padx=18, pady=17)
+        locations.pack(fill="x")
+        locations.columnconfigure(0, weight=1)
+        tk.Label(
+            locations, text="UBICACIONES", bg=C_CARD_INNER, fg=C_ACTION_BLUE,
+            font=("TkDefaultFont", 9, "bold"),
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 13))
 
-        self.status = ttk.Label(frm, text="Listo.")
-        self.status.grid(row=4, column=1, sticky="w")
+        tk.Label(
+            locations, text="Carpeta de origen (CD/DVD o directorio)",
+            bg=C_CARD_INNER, fg=C_TEXT, font=("TkDefaultFont", 9),
+        ).grid(row=1, column=0, columnspan=2, sticky="w")
+        ttk.Entry(locations, textvariable=self.src_var).grid(
+            row=2, column=0, sticky="ew", pady=(5, 14), ipady=6,
+        )
+        ttk.Button(
+            locations, text="Elegir…", style="Ghost.TButton", command=self.pick_src,
+        ).grid(row=2, column=1, padx=(8, 0), pady=(5, 14))
 
-        # Barra de progreso (indeterminada): se muestra solo mientras procesa
-        self.pb = ttk.Progressbar(frm, mode="indeterminate", length=160)
-        self.pb.grid(row=4, column=2, sticky="e")
-        self.pb.grid_remove()  # oculta por defecto
+        tk.Label(
+            locations, text="Carpeta de destino (directorio de trabajo Eclipse)",
+            bg=C_CARD_INNER, fg=C_TEXT, font=("TkDefaultFont", 9),
+        ).grid(row=3, column=0, columnspan=2, sticky="w")
+        ttk.Entry(locations, textvariable=self.dst_var).grid(
+            row=4, column=0, sticky="ew", pady=(5, 0), ipady=6,
+        )
+        ttk.Button(
+            locations, text="Elegir…", style="Ghost.TButton", command=self.pick_dst,
+        ).grid(row=4, column=1, padx=(8, 0), pady=(5, 0))
 
-        self.log = ScrolledText(frm, height=20)
-        self.log.grid(row=5, column=0, columnspan=3, sticky="nsew", pady=(10, 0))
-        frm.rowconfigure(5, weight=1)
+        options_border = tk.Frame(left, bg=C_BORDER, padx=1, pady=1)
+        options_border.pack(fill="x", pady=(16, 0))
+        options = tk.Frame(options_border, bg=C_CARD_INNER, padx=18, pady=17)
+        options.pack(fill="x")
+        tk.Label(
+            options, text="OPCIONES DE PROCESAMIENTO", bg=C_CARD_INNER,
+            fg=C_ACTION_BLUE, font=("TkDefaultFont", 9, "bold"),
+        ).pack(anchor="w", pady=(0, 10))
+
+        check_config = dict(
+            bg=C_CARD_INNER, activebackground=C_CARD_INNER, fg=C_TEXT,
+            activeforeground=C_TEXT, selectcolor=C_CARD, anchor="w",
+            justify="left", font=("TkDefaultFont", 9), bd=0,
+            highlightthickness=0,
+        )
+        tk.Checkbutton(
+            options,
+            text="Usar conversión alternativa si es necesario (recomendado)",
+            variable=self.use_gdcm_var, **check_config,
+        ).pack(fill="x", pady=4)
+        tk.Checkbutton(
+            options,
+            text="Guardar archivos no DICOM en una carpeta separada (recomendado)",
+            variable=self.copy_nondicom_var, **check_config,
+        ).pack(fill="x", pady=4)
+        ttk.Separator(options).pack(fill="x", pady=8)
+        tk.Checkbutton(
+            options,
+            text="Anonimizar como paciente TEST CYC (000000000) para pruebas",
+            variable=self.anonimize_test_var, **check_config,
+        ).pack(fill="x", pady=4)
+
+        self.btn_run = ttk.Button(
+            left, text="Revisar y procesar", style="Accent.TButton", command=self.run,
+        )
+        self.btn_run.pack(side="bottom", fill="x", pady=(18, 0))
+
+        log_border = tk.Frame(right, bg=C_BORDER, padx=1, pady=1)
+        log_border.grid(row=0, column=0, sticky="nsew")
+        log_border.columnconfigure(0, weight=1)
+        log_border.rowconfigure(1, weight=1)
+        log_header = tk.Frame(log_border, bg=C_CARD, padx=16, pady=12)
+        log_header.grid(row=0, column=0, sticky="ew")
+        log_header.columnconfigure(1, weight=1)
+        tk.Label(
+            log_header, text="Registro de operación", bg=C_CARD, fg=C_TEXT,
+            font=("TkDefaultFont", 14, "bold"),
+        ).grid(row=0, column=0, sticky="w")
+        self.status = tk.Label(
+            log_header, text="Esperando inicio", bg="#e1e2ed", fg=C_MUTED,
+            font=("TkDefaultFont", 9, "bold"), padx=10, pady=4,
+        )
+        self.status.grid(row=0, column=2, sticky="e")
+
+        self.pb = ttk.Progressbar(log_header, mode="indeterminate", length=150)
+        self.pb.grid(row=0, column=1, sticky="e", padx=12)
+        self.pb.grid_remove()
+
+        self.log = ScrolledText(
+            log_border, height=20, relief="flat", borderwidth=0,
+            bg="#2e3039", fg="#f0f0fb", insertbackground="#f0f0fb",
+            font=("TkFixedFont", 10), padx=16, pady=14,
+        )
+        self.log.grid(row=1, column=0, sticky="nsew")
+        self.log.insert(
+            "end",
+            "El análisis de la carpeta de origen y la clasificación de archivos se mostrarán aquí.\n",
+        )
 
         self.q = queue.Queue()
         self.master.after(100, self.poll_queue)
@@ -756,7 +910,7 @@ class App:
 
         t = threading.Thread(
             target=process_all,
-            args=(src, dst, self.use_gdcm_var.get(), self.copy_nondicom_var.get(), self.q),
+            args=(src, dst, self.use_gdcm_var.get(), self.copy_nondicom_var.get(), self.anonimize_test_var.get(), self.q),
             daemon=True
         )
         t.start()
@@ -764,6 +918,7 @@ class App:
 
 def main():
     root = Tk()
+    apply_medical_theme(root)
     app = App(root)
     root.mainloop()
 

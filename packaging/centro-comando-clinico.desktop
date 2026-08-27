@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Centro de Comando Clínico
+GenericName=Herramientas clínicas locales
+Comment=Procesamiento local de órdenes de trabajo y archivos DICOM
+Exec=centro-comando-clinico
+TryExec=centro-comando-clinico
+Icon=centro-comando-clinico
+Terminal=false
+Categories=Science;MedicalSoftware;
+StartupNotify=true
+StartupWMClass=Centro de Comando Clínico
+Keywords=DICOM;PDF;Eclipse;Clínico;
